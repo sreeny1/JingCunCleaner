@@ -141,10 +141,14 @@ class ScanEngine(
     // ------------------------------------------------------------------
 
     private fun collectFiles(root: File, cat: JunkCategory, out: MutableList<JunkItem>, onFile: (String) -> Unit) {
+        // visited 防 symlink 循环导致栈溢出
         val stack = ArrayDeque<File>()
+        val visited = HashSet<String>()
         stack.push(root)
         while (stack.isNotEmpty()) {
             val dir = stack.pop()
+            val canonical = runCatching { dir.canonicalPath }.getOrDefault(dir.absolutePath)
+            if (!visited.add(canonical)) continue
             val children = runCatching { dir.listFiles() }.getOrNull() ?: continue
             for (c in children) {
                 if (c.isDirectory) {
@@ -176,15 +180,21 @@ class ScanEngine(
         out: MutableList<JunkItem>,
         onFile: (String) -> Unit,
     ) {
+        // visited 防 symlink 循环导致栈溢出
         val stack = ArrayDeque<File>()
+        val visited = HashSet<String>()
         stack.push(root)
         while (stack.isNotEmpty()) {
             val dir = stack.pop()
+            val canonical = runCatching { dir.canonicalPath }.getOrDefault(dir.absolutePath)
+            if (!visited.add(canonical)) continue
             val children = runCatching { dir.listFiles() }.getOrNull() ?: continue
             for (c in children) {
                 if (c.isDirectory) {
                     val name = c.name.lowercase()
                     if (name == "android") continue // Android 文件夹单独处理缓存
+                    // 跳过版本控制目录，避免破坏工程文件
+                    if (name == ".git" || name == ".svn" || name == ".idea") continue
                     if (thumbnailNames.contains(name)) {
                         collectFiles(c, JunkCategory.THUMBNAIL, out, onFile)
                     } else {
@@ -216,6 +226,9 @@ class ScanEngine(
         pm: PackageManager,
     ): Boolean {
         val info = runCatching { pm.getPackageArchiveInfo(apk.absolutePath, 0) }.getOrNull() ?: return false
+        // 关键修复：畸形 APK 的 applicationInfo 可能为 null，PackageInfoCompat.getLongVersionCode 内部读
+        // applicationInfo.longVersionCode 会 NPE，导致整个扫描崩溃。必须判空。
+        val ai = info.applicationInfo ?: return false
         val pkgName = info.packageName ?: return false
         // 未安装的安装包不算残留，保留
         val installedInfo = installed[pkgName] ?: return false
@@ -239,8 +252,9 @@ class ScanEngine(
                 if (!c.isDirectory) continue
                 onFile(c.absolutePath)
                 if (isProtectedRoot(c, root)) continue
-                val isEmpty = runCatching { c.listFiles() }.getOrNull()?.isEmpty() ?: true
-                if (isEmpty) out.add(JunkItem(c.absolutePath, 0L, JunkCategory.EMPTY_FOLDER, true))
+                // 关键修复：listFiles 返回 null 时不视为空目录（无法访问 ≠ 空），跳过避免误删
+                val sub = runCatching { c.listFiles() }.getOrNull() ?: continue
+                if (sub.isEmpty()) out.add(JunkItem(c.absolutePath, 0L, JunkCategory.EMPTY_FOLDER, true))
             }
             return
         }
@@ -268,7 +282,8 @@ class ScanEngine(
         // 按路径长度倒序 → 叶子目录先处理
         allDirs.sortByDescending { it.absolutePath.length }
         for (dir in allDirs) {
-            val children = runCatching { dir.listFiles() }.getOrNull() ?: emptyArray()
+            // 关键修复：listFiles 返回 null 时视为含文件（保守，避免误删无法访问的目录）
+            val children = runCatching { dir.listFiles() }.getOrNull() ?: continue
             var containsFile = false
             for (c in children) {
                 if (c.isDirectory) {

@@ -3,6 +3,67 @@
 本项目版本号遵循 `主版本.次版本`（如 `2.2`），versionCode 单调递增。
 每次发布在 GitHub Releases 创建对应 tag（如 `v2.2`）并上传 APK。
 
+## [v2.3] - 2026-08-02
+
+### 修复（鲁棒性 / 健壮性）
+
+#### TrashManager 回收站
+- 修复文件大小计算 bug：原实现先移动文件再计算大小，导致 size 恒为 0，现改为移动前计算
+- 引入 `Mutex` 保证并发安全，避免多协程同时操作索引文件导致数据错乱
+- 索引文件原子写入：先写 `index.json.tmp` 再 rename，防止崩溃导致索引损坏
+- 错误处理：移动失败时正确返回 null，避免产生孤立索引项
+
+#### UpdateChecker / UpdateInstaller OTA 更新
+- 修复 `versionToLong` 版本比较：补齐到固定 4 段，解决 `2.2` 与 `2.2.0` 误判为不同版本
+- 网络预检查：无网络时立即返回，不再等待 10s 超时
+- HTTP 状态码区分：403 限速 / 404 仓库不存在给精确提示
+- 响应体大小限制 1MB，防恶意超大 JSON 导致 OOM
+- 下载协程取消处理：`ensureActive()` 响应用户取消，避免后台继续下载
+- `HttpURLConnection` try/finally disconnect，防连接泄漏
+- 下载缓冲区从 8KB 提升到 64KB，减少 I/O 开销
+- 安装前检查 `canRequestPackageInstalls()`，未授权时返回特殊状态引导授权
+- 修复 `InstallResult` sealed class 子类未调用构造函数的编译错误
+
+#### ScanEngine 扫描引擎
+- 修复空文件夹误判：`listFiles()` 返回 null 时跳过，避免无权限目录被当作空文件夹
+- 修复 `isApkResidual` 空指针：`getPackageArchiveInfo` 返回 null 或 applicationInfo 为 null 时安全返回
+- 符号链接处理：扫描时跳过 symlink，避免重复计算或死循环
+
+#### CleanerViewModel 状态管理
+- 扫描 / 清理协程包裹 try-catch，异常时回退 IDLE 状态而非卡死
+- `CancellationException` 正确重新抛出，不吞掉协程取消信号
+- `reset()` 时取消进行中的扫描 / 清理 Job，防止后台完成覆盖重置状态
+- 修复 `java.io.File` 重复导入导致的编译错误
+
+### 改进（UI 美化与体验）
+
+#### HomeScreen 主页
+- `StorageCard` 存储环改用 sweepGradient 渐变，圆环更有层次质感
+- `IdleScanCard` 扫描入口图标容器使用 primary→tertiary 线性渐变背景
+- `CleanedCard` 清理完成卡片：渐变圆形成功图标 + 大字号释放空间展示
+- 圆角统一升级（24dp / 28dp），视觉更柔和现代
+- 字体层级优化：标题加粗、副标题颜色层次分明
+
+#### TrashScreen 回收站
+- 顶部摘要卡升级：渐变圆形图标 + 大标题 + 紧凑操作按钮布局
+- 空状态：渐变圆形图标容器 + 居中大字提示，视觉更友好
+- 文件项卡片：文件类型图标容器统一为 secondaryContainer 圆形
+
+#### AboutScreen 关于
+- Hero 卡片：渐变圆形应用图标 + 版本徽章（半透明背景圆角胶囊）
+- 信息卡片圆角与阴影统一
+
+#### ApkOrganizerScreen APK 整理
+- `ApkIntroCard` 图标改用渐变背景，与全局视觉风格一致
+- `ApkDoneCard` 完成卡片：渐变圆形成功图标 + 圆角按钮
+
+### 技术细节
+- `minSdk` 31、`targetSdk` 36、`compileSdk` 36
+- versionCode=5，versionName=2.3
+- 构建工具：Gradle 8.14.4 + Kotlin 2.1.21 + Compose BOM
+
+---
+
 ## [v2.2] - 2026-08-02
 
 ### 新增

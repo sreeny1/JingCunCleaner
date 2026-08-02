@@ -77,13 +77,17 @@ class AppStorageScanner(private val context: Context) {
         if (!legacy) {
             // 标准通道：StorageStatsManager 获取完整大小
             val statsManager = context.getSystemService(Context.STORAGE_STATS_SERVICE) as StorageStatsManager
+            var stdFail = 0  // 统计标准通道失败次数，超过阈值降级
             apps.forEachIndexed { index, appInfo ->
                 val name = runCatching { pm.getApplicationLabel(appInfo).toString() }
                     .getOrDefault(appInfo.packageName)
                 if (index % 5 == 0) onProgress(Progress(index, total, name))
 
                 val info = runCatching {
-                    val stats = statsManager.queryStatsForUid(appInfo.storageUuid, appInfo.uid)
+                    // 关键修复：storageUuid 可能为 null（应用安装在已卸载的 SD 卡），判空避免 NPE
+                    val storageUuid = appInfo.storageUuid
+                        ?: return@runCatching null
+                    val stats = statsManager.queryStatsForUid(storageUuid, appInfo.uid)
                     val appBytes = stats.appBytes
                     val cacheBytes = stats.cacheBytes
                     // dataBytes 包含 cacheBytes，纯数据需相减（参考 Mozilla Firefox 实现）
@@ -100,40 +104,59 @@ class AppStorageScanner(private val context: Context) {
                     )
                 }.getOrNull()
 
+                if (info == null) stdFail++  // 统计失败
                 if (info != null && info.packageName != selfPkg) result.add(info)
+            }
+            // 关键修复：标准通道失败超过 50% 时降级到 legacy 通道重新扫描
+            if (apps.isNotEmpty() && stdFail * 2 > apps.size) {
+                return@withContext scanLegacy(apps, pm, selfPkg, total, onProgress)
             }
         } else {
-            // 降级通道：仅读取 APK 文件大小（无需 PACKAGE_USAGE_STATS）
-            apps.forEachIndexed { index, appInfo ->
-                val name = runCatching { pm.getApplicationLabel(appInfo).toString() }
-                    .getOrDefault(appInfo.packageName)
-                if (index % 5 == 0) onProgress(Progress(index, total, name))
-
-                val info = runCatching {
-                    val sourceDir = appInfo.sourceDir
-                    val apkSize = File(sourceDir).length()
-                    // 尝试累加 split APKs 大小
-                    val splitSizes = runCatching {
-                        appInfo.splitSourceDirs?.sumOf { File(it).length() } ?: 0L
-                    }.getOrDefault(0L)
-                    val totalApkSize = apkSize + splitSizes
-                    AppStorageInfo(
-                        packageName = appInfo.packageName,
-                        appName = name,
-                        appBytes = totalApkSize,
-                        dataBytes = 0L,
-                        cacheBytes = 0L,
-                        totalBytes = totalApkSize,
-                        isSystemApp = (appInfo.flags and ApplicationInfo.FLAG_SYSTEM) != 0,
-                        isLegacy = true,
-                    )
-                }.getOrNull()
-
-                if (info != null && info.packageName != selfPkg) result.add(info)
-            }
+            return@withContext scanLegacy(apps, pm, selfPkg, total, onProgress)
         }
 
         onProgress(Progress(total, total, "完成"))
         result.sortedByDescending { it.totalBytes }
+    }
+
+    /** 降级通道：仅读取 APK 文件大小（无需 PACKAGE_USAGE_STATS），sourceDir null 时跳过 */
+    private fun scanLegacy(
+        apps: List<ApplicationInfo>,
+        pm: PackageManager,
+        selfPkg: String,
+        total: Int,
+        onProgress: (Progress) -> Unit,
+    ): List<AppStorageInfo> {
+        val result = mutableListOf<AppStorageInfo>()
+        apps.forEachIndexed { index, appInfo ->
+            val name = runCatching { pm.getApplicationLabel(appInfo).toString() }
+                .getOrDefault(appInfo.packageName)
+            if (index % 5 == 0) onProgress(Progress(index, total, name))
+
+            val info = runCatching {
+                // 关键修复：sourceDir 可能为 null（已卸载残留/某些系统分区应用），判空避免 NPE
+                val sourceDir = appInfo.sourceDir ?: return@runCatching null
+                val apkSize = runCatching { File(sourceDir).length() }.getOrDefault(0L)
+                // 尝试累加 split APKs 大小
+                val splitSizes = runCatching {
+                    appInfo.splitSourceDirs?.sumOf { File(it).length() } ?: 0L
+                }.getOrDefault(0L)
+                val totalApkSize = apkSize + splitSizes
+                AppStorageInfo(
+                    packageName = appInfo.packageName,
+                    appName = name,
+                    appBytes = totalApkSize,
+                    dataBytes = 0L,
+                    cacheBytes = 0L,
+                    totalBytes = totalApkSize,
+                    isSystemApp = (appInfo.flags and ApplicationInfo.FLAG_SYSTEM) != 0,
+                    isLegacy = true,
+                )
+            }.getOrNull()
+
+            if (info != null && info.packageName != selfPkg) result.add(info)
+        }
+        onProgress(Progress(total, total, "完成"))
+        return result.sortedByDescending { it.totalBytes }
     }
 }

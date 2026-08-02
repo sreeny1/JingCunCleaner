@@ -1,7 +1,8 @@
 package com.jingcun.cleaner.update
 
 import android.content.Context
-import android.content.pm.PackageManager
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
@@ -11,14 +12,13 @@ import java.net.URL
 /**
  * OTA 更新检查器：基于 GitHub Releases API。
  *
- * 工作流程：
- * 1. 请求 https://api.github.com/repos/{owner}/{repo}/releases/latest
- * 2. 解析 tag_name（如 v2.2）对比当前 versionCode
- * 3. 返回 UpdateInfo（版本号、更新说明、APK 下载地址、文件大小）
- *
- * 参考：
- * - 字节跳动/DCloud update-checker 的版本对比逻辑
- * - koreader/android-update-engine 的 GitHub Release 检查
+ * 关键修复（v2.3）：
+ * - try/finally 确保 conn.disconnect()，防连接泄漏
+ * - versionToLong 补齐段数到 4 段，修复 2.2 vs 2.2.0 误判
+ * - apkUrl 用 isNullOrEmpty() 判空（optString 缺失返回 ""）
+ * - 区分 403 限速/404 仓库不存在，UI 给准确提示
+ * - 网络预检查，无网络立即返回不等待 10s 超时
+ * - 限制响应体 1MB，防恶意超大 JSON 导致 OOM
  */
 class UpdateChecker(private val context: Context) {
 
@@ -31,13 +31,19 @@ class UpdateChecker(private val context: Context) {
         val htmlUrl: String,          // Release 页面地址
     )
 
-    /** GitHub 仓库信息（OTA 检查地址：https://api.github.com/repos/{owner}/{repo}/releases/latest） */
+    /** 检查结果封装：区分"无新版本"和"请求失败" */
+    sealed class CheckResult {
+        data object NoUpdate : CheckResult()                    // 已是最新
+        data class HasUpdate(val info: UpdateInfo) : CheckResult() // 有新版本
+        data class Failed(val reason: String) : CheckResult()   // 请求失败（网络/限速/仓库不存在）
+    }
+
+    /** GitHub 仓库信息 */
     @Volatile
     var repoOwner: String = "sreeny1"
     @Volatile
     var repoName: String = "JingCunCleaner"
 
-    /** 当前已安装版本 */
     fun currentVersionCode(): Long = try {
         val pm = context.packageManager
         val info = pm.getPackageInfo(context.packageName, 0)
@@ -52,12 +58,18 @@ class UpdateChecker(private val context: Context) {
 
     /**
      * 检查 GitHub 最新 Release 是否有新版本。
-     * @return UpdateInfo 若有新版本；null 表示已是最新或请求失败
+     * 返回 CheckResult 区分"无更新"与"请求失败"，UI 据此给准确提示。
      */
-    suspend fun checkForUpdate(): UpdateInfo? = withContext(Dispatchers.IO) {
-        runCatching {
+    suspend fun checkForUpdate(): CheckResult = withContext(Dispatchers.IO) {
+        // 网络预检查：无网络立即返回，避免用户等待 10s 超时
+        if (!isNetworkAvailable()) {
+            return@withContext CheckResult.Failed("无网络连接")
+        }
+
+        var conn: HttpURLConnection? = null
+        try {
             val apiUrl = "https://api.github.com/repos/$repoOwner/$repoName/releases/latest"
-            val conn = (URL(apiUrl).openConnection() as HttpURLConnection).apply {
+            conn = (URL(apiUrl).openConnection() as HttpURLConnection).apply {
                 requestMethod = "GET"
                 connectTimeout = 10000
                 readTimeout = 15000
@@ -65,54 +77,86 @@ class UpdateChecker(private val context: Context) {
                 setRequestProperty("User-Agent", "JingCunCleaner-OTA")
             }
             conn.connect()
-            if (conn.responseCode != 200) return@runCatching null
-            val body = conn.inputStream.bufferedReader().use { it.readText() }
-            conn.disconnect()
-            parseRelease(body)
-        }.getOrNull()
+            val code = conn.responseCode
+            when {
+                code == 200 -> {
+                    // 限制读取 1MB，防恶意超大响应导致 OOM
+                    val body = conn.inputStream.bufferedReader().use { reader ->
+                        val sb = StringBuilder()
+                        val buffer = CharArray(8192)
+                        var read: Int
+                        var total = 0
+                        while (reader.read(buffer).also { read = it } != -1) {
+                            sb.append(buffer, 0, read)
+                            total += read
+                            if (total > 1 * 1024 * 1024) break
+                        }
+                        sb.toString()
+                    }
+                    parseRelease(body) ?: CheckResult.NoUpdate
+                }
+                code == 403 -> CheckResult.Failed("GitHub API 限速，请稍后重试")
+                code == 404 -> CheckResult.Failed("仓库或 Release 不存在")
+                else -> CheckResult.Failed("服务器返回 $code")
+            }
+        } catch (e: Exception) {
+            CheckResult.Failed(e.message ?: "网络请求异常")
+        } finally {
+            // 关键修复：finally 确保 disconnect，防连接泄漏
+            conn?.disconnect()
+        }
     }
 
-    private fun parseRelease(json: String): UpdateInfo? = runCatching {
-        val obj = JSONObject(json)
-        // tag_name 格式如 "v2.2" 或 "2.2"
+    private fun parseRelease(json: String): CheckResult? {
+        val obj = runCatching { JSONObject(json) }.getOrNull() ?: return CheckResult.Failed("响应解析失败")
         val tag = obj.optString("tag_name").removePrefix("v").removePrefix("V").trim()
         val newVersionName = tag.ifBlank { obj.optString("name", "未知版本") }
-        // 把版本号字符串（如 2.2 / 2.10.1）解析为可比较的长整型
         val newVerNum = versionToLong(newVersionName)
-        if (newVerNum <= 0) return null
-        // 用 versionName 比对，避免依赖 build.gradle 中单调递增的 versionCode
+        if (newVerNum <= 0) return CheckResult.Failed("版本号格式异常: $newVersionName")
         val currentVerNum = versionToLong(currentVersionName())
-        if (newVerNum <= currentVerNum) return null
+        if (newVerNum <= currentVerNum) return CheckResult.NoUpdate
 
         val notes = obj.optString("body", "暂无更新说明").ifBlank { "暂无更新说明" }
         val htmlUrl = obj.optString("html_url", "")
-        // 从 assets 中找 .apk 文件
-        val assets = obj.optJSONArray("assets") ?: return null
-        var apkUrl: String? = null
+        val assets = obj.optJSONArray("assets") ?: return CheckResult.Failed("Release 无 APK 资产")
+        var apkUrl = ""
         var apkSize = 0L
         for (i in 0 until assets.length()) {
             val asset = assets.optJSONObject(i) ?: continue
             val name = asset.optString("name", "")
             if (name.endsWith(".apk", ignoreCase = true)) {
-                apkUrl = asset.optString("browser_download_url")
+                apkUrl = asset.optString("browser_download_url", "")
                 apkSize = asset.optLong("size", 0L)
                 break
             }
         }
-        if (apkUrl == null) return null
-        UpdateInfo(
-            versionName = newVersionName,
-            versionCode = newVerNum,
-            releaseNotes = notes,
-            downloadUrl = apkUrl,
-            fileSize = apkSize,
-            htmlUrl = htmlUrl,
+        // 关键修复：optString 缺失返回 ""，用 isNullOrEmpty 判空
+        if (apkUrl.isEmpty()) return CheckResult.Failed("Release 未找到 APK 文件")
+        return CheckResult.HasUpdate(
+            UpdateInfo(
+                versionName = newVersionName,
+                versionCode = newVerNum,
+                releaseNotes = notes,
+                downloadUrl = apkUrl,
+                fileSize = apkSize,
+                htmlUrl = htmlUrl,
+            )
         )
-    }.getOrNull()
+    }
+
+    private fun isNetworkAvailable(): Boolean = runCatching {
+        val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager ?: return false
+        val network = cm.activeNetwork ?: return false
+        val caps = cm.getNetworkCapabilities(network) ?: return false
+        caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) &&
+            caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)
+    }.getOrDefault(false)
 
     /**
      * 将点分版本号字符串转为可比较的长整型。
-     * 例：2.1 → 20001，2.2 → 20002，2.10.1 → 2010001
+     * 关键修复：补齐到固定 4 段，否则 2.2(20002) 与 2.2.0(200020000) 比较错误，导致重复提示更新。
+     * 例：2.2 → 20002000000000000，2.2.0 → 20002000000000000（相等，正确）
+     *     2.10.1 → 20100010000000000（大于 2.2，正确）
      * 每段限定 0~9999，最多支持 4 段。
      */
     private fun versionToLong(version: String): Long {
@@ -124,6 +168,8 @@ class UpdateChecker(private val context: Context) {
         for (part in parts) {
             result = result * 10000 + part.coerceIn(0, 9999)
         }
+        // 补齐到 4 段，使 2.2 与 2.2.0 相等
+        repeat(4 - parts.size) { result *= 10000 }
         return result
     }
 }

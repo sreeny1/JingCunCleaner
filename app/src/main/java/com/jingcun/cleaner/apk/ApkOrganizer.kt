@@ -7,6 +7,8 @@ import android.os.Environment
 import androidx.core.content.pm.PackageInfoCompat
 import com.jingcun.cleaner.data.ApkOrganizeMode
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.text.SimpleDateFormat
@@ -52,10 +54,18 @@ class ApkOrganizer(private val context: Context) {
         val root = Environment.getExternalStorageDirectory()
         val result = mutableListOf<ApkInfo>()
         val stack = ArrayDeque<File>()
+        // visited 防 symlink 循环导致栈溢出
+        val visited = HashSet<String>()
         stack.addLast(root)
         var scanned = 0
+        // 支持的安装包扩展名（含分裂包格式）
+        val apkExts = setOf("apk", "apks", "xapk", "apkm")
         while (stack.isNotEmpty()) {
+            // 响应协程取消
+            currentCoroutineContext().ensureActive()
             val dir = stack.removeLast()
+            val canonical = runCatching { dir.canonicalPath }.getOrDefault(dir.absolutePath)
+            if (!visited.add(canonical)) continue
             val children = runCatching { dir.listFiles() }.getOrNull() ?: continue
             for (c in children) {
                 if (c.isDirectory) {
@@ -64,7 +74,7 @@ class ApkOrganizer(private val context: Context) {
                     if (c.absolutePath == targetDir.absolutePath) continue
                     if (name == "Android") continue
                     stack.addLast(c)
-                } else if (c.extension.equals("apk", ignoreCase = true)) {
+                } else if (c.extension.lowercase() in apkExts) {
                     scanned++
                     onProgress(Progress(scanned, -1, c.name))
                     parseApk(c)?.let { result.add(it) }
@@ -100,9 +110,17 @@ class ApkOrganizer(private val context: Context) {
     /**
      * 整理一个 APK 到目标目录。
      * @param mode COPY=复制保留原文件；MOVE=移动（复制成功后删除原文件）
+     *
+     * 关键修复（v2.3）：
+     * - 复制失败时清理半成品 target，防磁盘泄漏与下次冲突检测异常
+     * - MOVE 模式删除原文件失败时视为整体失败并清理 target，避免重复整理产生副本
+     * - 64KB 缓冲区提升大 APK 复制效率
+     * - versionName 为空时回退 versionCode，保证文件名可区分版本
      */
     suspend fun organize(apk: ApkInfo, mode: ApkOrganizeMode): OrganizeResult = withContext(Dispatchers.IO) {
-        val safeName = sanitizeFileName("${apk.appName}${apk.versionName}")
+        // versionName 为空时回退 versionCode，保证文件名可区分版本
+        val verPart = apk.versionName.ifBlank { "v${apk.versionCode}" }
+        val safeName = sanitizeFileName("${apk.appName}${verPart}")
         var target = File(targetDir, "$safeName.apk")
         // 同名冲突加序号
         var n = 1
@@ -113,22 +131,32 @@ class ApkOrganizer(private val context: Context) {
         val ok = runCatching {
             target.parentFile?.mkdirs()
             apk.sourceFile.inputStream().use { input ->
-                target.outputStream().use { output -> input.copyTo(output) }
+                target.outputStream().use { output -> input.copyTo(output, bufferSize = 64 * 1024) }
             }
             true
-        }.getOrDefault(false)
+        }.getOrElse {
+            // 关键修复：复制失败清理半成品 target，防磁盘泄漏
+            runCatching { target.delete() }
+            false
+        }
         // 移动模式：复制成功后删除原文件
         var moved = false
         if (ok && mode == ApkOrganizeMode.MOVE) {
             moved = runCatching { apk.sourceFile.delete() }.getOrDefault(false)
+            // 关键修复：MOVE 删除原文件失败视为整体失败，清理 target 避免重复整理产生副本
+            if (!moved) {
+                runCatching { target.delete() }
+            }
         }
+        // COPY 模式 success=ok；MOVE 模式 success=ok&&moved
+        val finalSuccess = ok && (mode == ApkOrganizeMode.COPY || moved)
         OrganizeResult(
             apkInfo = apk,
             targetPath = target.absolutePath,
-            success = ok,
+            success = finalSuccess,
             reason = when {
                 !ok -> "复制失败"
-                mode == ApkOrganizeMode.MOVE && !moved -> "复制成功但删除原文件失败（已保留原文件）"
+                mode == ApkOrganizeMode.MOVE && !moved -> "复制成功但删除原文件失败，已回滚"
                 else -> if (mode == ApkOrganizeMode.MOVE) "已移动" else "已复制"
             },
         )

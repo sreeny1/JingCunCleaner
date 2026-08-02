@@ -16,6 +16,7 @@ import com.jingcun.cleaner.scanner.JunkCategory
 import com.jingcun.cleaner.scanner.JunkItem
 import com.jingcun.cleaner.scanner.ScanEngine
 import com.jingcun.cleaner.trash.TrashManager
+import java.io.File
 import com.jingcun.cleaner.update.UpdateChecker
 import com.jingcun.cleaner.update.UpdateInstaller
 import kotlinx.coroutines.Job
@@ -26,7 +27,6 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
-import java.io.File
 
 enum class Phase { IDLE, SCANNING, DONE, CLEANING, CLEANED }
 
@@ -123,8 +123,9 @@ class CleanerViewModel(app: Application) : AndroidViewModel(app) {
             )
         }
         scanJob = viewModelScope.launch {
-            val s = settings.value
-            val result = engine.scan(s.emptyFolderScope) { p ->
+            try {
+                val s = settings.value
+                val result = engine.scan(s.emptyFolderScope) { p ->
                 // 根据阶段文案映射进度区间，避免卡在固定值
                 val progress = when {
                     p.currentPath.startsWith("扫描应用缓存") -> 0.05f
@@ -149,6 +150,11 @@ class CleanerViewModel(app: Application) : AndroidViewModel(app) {
             // 扫描后直接清理（若开启）
             if (s.scanThenClean && result.items.isNotEmpty()) {
                 clean()
+            }
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Throwable) {
+                _state.update { it.copy(phase = Phase.IDLE, currentPath = "扫描失败：${e.message ?: e.javaClass.simpleName}") }
             }
         }
     }
@@ -188,28 +194,37 @@ class CleanerViewModel(app: Application) : AndroidViewModel(app) {
             it.copy(phase = Phase.CLEANING, progress = 0f, currentPath = "正在清理…", cleanedCount = 0)
         }
         cleanJob = viewModelScope.launch {
-            val recycleEnabled = settings.value.recycleBinEnabled
-            val result = engine.clean(toClean, recycleEnabled) { p ->
-                _state.update {
-                    it.copy(progress = p.done.toFloat() / p.total.coerceAtLeast(1), cleanedCount = p.done)
+            try {
+                val recycleEnabled = settings.value.recycleBinEnabled
+                val result = engine.clean(toClean, recycleEnabled) { p ->
+                    _state.update {
+                        it.copy(progress = p.done.toFloat() / p.total.coerceAtLeast(1), cleanedCount = p.done)
+                    }
                 }
+                _state.update {
+                    it.copy(
+                        phase = Phase.CLEANED,
+                        freedBytes = result.freedBytes,
+                        trashedCount = result.trashedCount,
+                        deletedCount = result.deletedCount,
+                        progress = 1f,
+                        currentPath = "清理完成",
+                    )
+                }
+                refreshStorage()
+                refreshTrash()
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Throwable) {
+                _state.update { it.copy(phase = Phase.IDLE, currentPath = "清理失败：${e.message ?: e.javaClass.simpleName}") }
             }
-            _state.update {
-                it.copy(
-                    phase = Phase.CLEANED,
-                    freedBytes = result.freedBytes,
-                    trashedCount = result.trashedCount,
-                    deletedCount = result.deletedCount,
-                    progress = 1f,
-                    currentPath = "清理完成",
-                )
-            }
-            refreshStorage()
-            refreshTrash()
         }
     }
 
     fun reset() {
+        // 关键修复：重置时取消正在进行的扫描/清理，否则后台 job 完成会覆盖重置后的状态
+        scanJob?.cancel()
+        cleanJob?.cancel()
         _state.update {
             UiState(
                 storageTotal = it.storageTotal,
@@ -272,13 +287,20 @@ class CleanerViewModel(app: Application) : AndroidViewModel(app) {
         if (_apkState.value.phase == ApkPhase.SCANNING || _apkState.value.phase == ApkPhase.ORGANIZING) return
         _apkState.value = ApkUiState(phase = ApkPhase.SCANNING, currentName = "正在扫描 APK…")
         viewModelScope.launch {
-            val list = apkOrganizer.scanAll { p ->
-                _apkState.value = _apkState.value.copy(
-                    progress = if (p.total > 0) p.scanned.toFloat() / p.total else 0f,
-                    currentName = p.currentName,
-                )
+            try {
+                val list = apkOrganizer.scanAll { p ->
+                    _apkState.value = _apkState.value.copy(
+                        // total=-1（扫描前不知道总数）时显示已扫描绝对值而非百分比
+                        progress = if (p.total > 0) p.scanned.toFloat() / p.total else 0f,
+                        currentName = "已扫描 ${p.scanned} 个 · ${p.currentName}",
+                    )
+                }
+                _apkState.value = ApkUiState(phase = ApkPhase.READY, apks = list, totalCount = list.size)
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Throwable) {
+                _apkState.value = ApkUiState(phase = ApkPhase.IDLE, message = "扫描失败：${e.message ?: e.javaClass.simpleName}")
             }
-            _apkState.value = ApkUiState(phase = ApkPhase.READY, apks = list, totalCount = list.size)
         }
     }
 
@@ -287,19 +309,28 @@ class CleanerViewModel(app: Application) : AndroidViewModel(app) {
         if (s.phase != ApkPhase.READY || s.apks.isEmpty()) return
         _apkState.value = s.copy(phase = ApkPhase.ORGANIZING, progress = 0f, organizedCount = 0)
         viewModelScope.launch {
-            val mode = settings.value.apkOrganizeMode
-            val results = apkOrganizer.organizeAll(s.apks, mode) { done, total ->
+            try {
+                val mode = settings.value.apkOrganizeMode
+                val results = apkOrganizer.organizeAll(s.apks, mode) { done, total ->
+                    _apkState.value = _apkState.value.copy(
+                        progress = done.toFloat() / total.coerceAtLeast(1),
+                        organizedCount = done,
+                        totalCount = total,
+                    )
+                }
+                val ok = results.count { it.success }
                 _apkState.value = _apkState.value.copy(
-                    progress = done.toFloat() / total.coerceAtLeast(1),
-                    organizedCount = done,
-                    totalCount = total,
+                    phase = ApkPhase.DONE,
+                    message = "整理完成（${mode.title}）：成功 $ok / 共 ${results.size}",
+                )
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Throwable) {
+                _apkState.value = _apkState.value.copy(
+                    phase = ApkPhase.DONE,
+                    message = "整理失败：${e.message ?: e.javaClass.simpleName}",
                 )
             }
-            val ok = results.count { it.success }
-            _apkState.value = _apkState.value.copy(
-                phase = ApkPhase.DONE,
-                message = "整理完成（${mode.title}）：成功 $ok / 共 ${results.size}",
-            )
         }
     }
 
@@ -336,18 +367,30 @@ class CleanerViewModel(app: Application) : AndroidViewModel(app) {
             isLegacy = appStorageScanner.isLegacyMode(),
         )
         viewModelScope.launch {
-            val list = appStorageScanner.scanAll { p ->
-                _appStorageState.value = _appStorageState.value.copy(
-                    progress = if (p.total > 0) p.scanned.toFloat() / p.total else 0f,
-                    currentName = p.currentName,
+            try {
+                val isLegacy = appStorageScanner.isLegacyMode()
+                val list = appStorageScanner.scanAll { p ->
+                    _appStorageState.value = _appStorageState.value.copy(
+                        progress = if (p.total > 0) p.scanned.toFloat() / p.total else 0f,
+                        currentName = p.currentName,
+                    )
+                }
+                _appStorageState.value = AppStorageUiState(
+                    phase = AppStoragePhase.DONE,
+                    apps = list,
+                    totalSize = list.sumOf { it.totalBytes },
+                    // 关键修复：继承 SCANNING 阶段的 isLegacy，list 为空时不会误判为 false
+                    isLegacy = isLegacy,
+                )
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Throwable) {
+                _appStorageState.value = AppStorageUiState(
+                    phase = AppStoragePhase.IDLE,
+                    currentName = "扫描失败：${e.message ?: e.javaClass.simpleName}",
+                    isLegacy = appStorageScanner.isLegacyMode(),
                 )
             }
-            _appStorageState.value = AppStorageUiState(
-                phase = AppStoragePhase.DONE,
-                apps = list,
-                totalSize = list.sumOf { it.totalBytes },
-                isLegacy = list.firstOrNull()?.isLegacy ?: false,
-            )
         }
     }
 
@@ -393,12 +436,24 @@ class CleanerViewModel(app: Application) : AndroidViewModel(app) {
         _updateState.value = UpdateUiState(phase = UpdatePhase.CHECKING, silent = silent, manual = !silent)
         updateJob?.cancel()
         updateJob = viewModelScope.launch {
-            val info = updateChecker.checkForUpdate()
-            _updateState.value = if (info == null) {
-                UpdateUiState(phase = UpdatePhase.IDLE, manual = !silent,
-                    message = if (!silent) "已是最新版本" else "")
-            } else {
-                UpdateUiState(phase = UpdatePhase.AVAILABLE, info = info, manual = !silent)
+            try {
+                // 适配新的 CheckResult 区分"无更新"与"请求失败"
+                val result = updateChecker.checkForUpdate()
+                _updateState.value = when (result) {
+                    is UpdateChecker.CheckResult.HasUpdate ->
+                        UpdateUiState(phase = UpdatePhase.AVAILABLE, info = result.info, manual = !silent)
+                    is UpdateChecker.CheckResult.NoUpdate ->
+                        UpdateUiState(phase = UpdatePhase.IDLE, manual = !silent,
+                            message = if (!silent) "已是最新版本" else "")
+                    is UpdateChecker.CheckResult.Failed ->
+                        UpdateUiState(phase = UpdatePhase.ERROR, manual = !silent,
+                            message = result.reason)
+                }
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Throwable) {
+                _updateState.value = UpdateUiState(phase = UpdatePhase.ERROR, manual = !silent,
+                    message = e.message ?: "检查失败")
             }
         }
     }
@@ -415,17 +470,28 @@ class CleanerViewModel(app: Application) : AndroidViewModel(app) {
         )
         updateJob?.cancel()
         updateJob = viewModelScope.launch {
-            val file = updateInstaller.download(info.downloadUrl) { p ->
+            try {
+                val file = updateInstaller.download(info.downloadUrl) { p ->
+                    _updateState.value = _updateState.value.copy(
+                        downloadedBytes = p.downloaded, totalBytes = p.total
+                    )
+                }
+                if (file != null) {
+                    downloadedApk = file
+                    _updateState.value = _updateState.value.copy(phase = UpdatePhase.DOWNLOADED)
+                } else {
+                    _updateState.value = _updateState.value.copy(
+                        phase = UpdatePhase.ERROR, message = "下载失败，请检查网络后重试"
+                    )
+                }
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                // 用户取消下载，清理半成品文件
+                updateInstaller.cleanDownloaded()
+                _updateState.value = UpdateUiState()
+                throw e
+            } catch (e: Throwable) {
                 _updateState.value = _updateState.value.copy(
-                    downloadedBytes = p.downloaded, totalBytes = p.total
-                )
-            }
-            if (file != null) {
-                downloadedApk = file
-                _updateState.value = _updateState.value.copy(phase = UpdatePhase.DOWNLOADED)
-            } else {
-                _updateState.value = _updateState.value.copy(
-                    phase = UpdatePhase.ERROR, message = "下载失败，请检查网络后重试"
+                    phase = UpdatePhase.ERROR, message = "下载失败：${e.message ?: "未知错误"}"
                 )
             }
         }
@@ -434,13 +500,36 @@ class CleanerViewModel(app: Application) : AndroidViewModel(app) {
     /** 引导式安装：调起系统安装器，由用户确认安装 */
     fun installUpdate() {
         val apk = downloadedApk ?: return
-        val ok = updateInstaller.install(apk)
-        if (!ok) {
-            _updateState.value = _updateState.value.copy(
-                phase = UpdatePhase.ERROR, message = "无法调起系统安装器"
-            )
+        // 适配新的 InstallResult：区分"未授权安装未知应用"以引导授权
+        when (updateInstaller.install(apk)) {
+            UpdateInstaller.InstallResult.Started -> {
+                // 调起成功后不重置状态，让用户在系统安装页完成操作；返回 App 时仍能看到提示
+            }
+            UpdateInstaller.InstallResult.NeedInstallPermission -> {
+                _updateState.value = _updateState.value.copy(
+                    phase = UpdatePhase.ERROR,
+                    message = "需授权「安装未知应用」权限，请在系统设置中允许本应用安装 APK"
+                )
+                pendingInstallApk = apk
+            }
+            UpdateInstaller.InstallResult.NoInstaller -> {
+                _updateState.value = _updateState.value.copy(
+                    phase = UpdatePhase.ERROR, message = "无法调起系统安装器"
+                )
+            }
         }
-        // 调起成功后不重置状态，让用户在系统安装页完成操作；返回 App 时仍能看到提示
+    }
+
+    /** 待安装的 APK（授权后重试安装用） */
+    private var pendingInstallApk: File? = null
+
+    /** 授权「安装未知应用」后重试安装 */
+    fun retryInstallAfterPermission() {
+        pendingInstallApk?.let { apk ->
+            pendingInstallApk = null
+            _updateState.value = _updateState.value.copy(phase = UpdatePhase.DOWNLOADED)
+            installUpdate()
+        }
     }
 
     /** 关闭更新提示（用户点击"稍后"或"取消"） */

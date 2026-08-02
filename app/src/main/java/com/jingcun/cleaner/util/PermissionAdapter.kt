@@ -59,6 +59,8 @@ class PermissionAdapter(private val context: Context) {
 
     /** 是否支持使用情况访问授权页（车机精简后返回 false） */
     fun isUsageAccessSettingsAvailable(): Boolean {
+        // 关键修复：ACTION_USAGE_ACCESS_SETTINGS 不接受 package data，加 data 后部分 ROM
+        // resolveActivity 返回 null 误判为不可用，导致错误降级。去掉 data。
         val intent = Intent(Settings.ACTION_USAGE_ACCESS_SETTINGS)
         return intent.resolveActivity(context.packageManager) != null
     }
@@ -76,8 +78,10 @@ class PermissionAdapter(private val context: Context) {
     /** 创建使用情况访问授权 Intent（不可用时返回 null） */
     fun createUsageAccessIntent(): Intent? {
         if (!isUsageAccessSettingsAvailable()) return null
+        // 关键修复：ACTION_USAGE_ACCESS_SETTINGS 是应用列表页，不接受 package data。
+        // 加 data 后部分 ROM 跳转失败或 resolveActivity 返回 null。去掉 data，
+        // 用户在授权列表页手动找到本应用即可。
         return Intent(Settings.ACTION_USAGE_ACCESS_SETTINGS).apply {
-            data = Uri.parse("package:${context.packageName}")
             addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         }
     }

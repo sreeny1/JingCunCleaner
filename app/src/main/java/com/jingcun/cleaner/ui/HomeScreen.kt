@@ -11,6 +11,7 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.scaleIn
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -186,24 +187,27 @@ private fun StorageCard(state: UiState) {
     val animFraction by animateFloatAsState(usedFraction, animationSpec = tween(800), label = "ring")
 
     Card(
-        shape = RoundedCornerShape(24.dp),
+        shape = RoundedCornerShape(28.dp),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer),
+        elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
         modifier = Modifier.fillMaxWidth(),
     ) {
-        Row(modifier = Modifier.fillMaxWidth().padding(20.dp), verticalAlignment = Alignment.CenterVertically) {
-            Box(modifier = Modifier.size(112.dp), contentAlignment = Alignment.Center) {
+        Row(modifier = Modifier.fillMaxWidth().padding(24.dp), verticalAlignment = Alignment.CenterVertically) {
+            Box(modifier = Modifier.size(124.dp), contentAlignment = Alignment.Center) {
                 StorageRing(animFraction)
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    Text("${(animFraction * 100).toInt()}%", style = MaterialTheme.typography.titleLarge, color = MaterialTheme.colorScheme.onPrimaryContainer, fontWeight = FontWeight.Bold)
-                    Text("已使用", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onPrimaryContainer)
+                    Text("${(animFraction * 100).toInt()}%", style = MaterialTheme.typography.displaySmall, color = MaterialTheme.colorScheme.onPrimaryContainer, fontWeight = FontWeight.Bold)
+                    Text("已使用", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.8f))
                 }
             }
-            Spacer(Modifier.width(20.dp))
+            Spacer(Modifier.width(24.dp))
             Column(modifier = Modifier.weight(1f)) {
-                Text("存储空间", style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.onPrimaryContainer)
-                Spacer(Modifier.height(6.dp))
+                Text("存储空间", style = MaterialTheme.typography.titleLarge, color = MaterialTheme.colorScheme.onPrimaryContainer, fontWeight = FontWeight.Bold)
+                Spacer(Modifier.height(10.dp))
                 StorageRow("已用", formatBytes(used))
+                Spacer(Modifier.height(4.dp))
                 StorageRow("可用", formatBytes(state.storageFree))
+                Spacer(Modifier.height(4.dp))
                 StorageRow("总计", formatBytes(state.storageTotal))
             }
         }
@@ -213,13 +217,16 @@ private fun StorageCard(state: UiState) {
 @Composable
 private fun StorageRing(usedFraction: Float) {
     val primary = MaterialTheme.colorScheme.primary
-    val track = MaterialTheme.colorScheme.surfaceVariant
-    Canvas(modifier = Modifier.size(112.dp)) {
-        val stroke = 14.dp.toPx()
+    val tertiary = MaterialTheme.colorScheme.tertiary
+    val track = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
+    // 渐变画刷：主色到第三色，让圆环更有层次
+    val brush = androidx.compose.ui.graphics.Brush.sweepGradient(listOf(primary, tertiary, primary))
+    Canvas(modifier = Modifier.size(124.dp)) {
+        val stroke = 16.dp.toPx()
         val diameter = size.minDimension - stroke
         val topLeft = Offset((size.width - diameter) / 2f, (size.height - diameter) / 2f)
         drawArc(color = track, startAngle = -90f, sweepAngle = 360f, useCenter = false, topLeft = topLeft, size = Size(diameter, diameter), style = Stroke(width = stroke, cap = StrokeCap.Round))
-        drawArc(color = primary, startAngle = -90f, sweepAngle = 360f * usedFraction.coerceIn(0f, 1f), useCenter = false, topLeft = topLeft, size = Size(diameter, diameter), style = Stroke(width = stroke, cap = StrokeCap.Round))
+        drawArc(brush = brush, startAngle = -90f, sweepAngle = 360f * usedFraction.coerceIn(0f, 1f), useCenter = false, topLeft = topLeft, size = Size(diameter, diameter), style = Stroke(width = stroke, cap = StrokeCap.Round))
     }
 }
 
@@ -250,25 +257,31 @@ private fun PermissionCard(onGrant: () -> Unit) {
 
 @Composable
 private fun IdleScanCard(enabled: Boolean, onScan: () -> Unit) {
-    Card(shape = RoundedCornerShape(24.dp), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface), elevation = CardDefaults.cardElevation(defaultElevation = 1.dp), modifier = Modifier.fillMaxWidth()) {
-        Column(modifier = Modifier.fillMaxWidth().padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-            Surface(shape = CircleShape, color = MaterialTheme.colorScheme.primaryContainer, modifier = Modifier.size(96.dp)) {
-                Box(contentAlignment = Alignment.Center) {
-                    Icon(Icons.Filled.CleaningServices, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(52.dp))
+    Card(shape = RoundedCornerShape(28.dp), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface), elevation = CardDefaults.cardElevation(defaultElevation = 2.dp), modifier = Modifier.fillMaxWidth()) {
+        Column(modifier = Modifier.fillMaxWidth().padding(28.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+            // 图标容器用渐变背景提升质感
+            Surface(shape = CircleShape, modifier = Modifier.size(104.dp)) {
+                Box(contentAlignment = Alignment.Center, modifier = Modifier.background(
+                    androidx.compose.ui.graphics.Brush.linearGradient(
+                        listOf(MaterialTheme.colorScheme.primary, MaterialTheme.colorScheme.tertiary)
+                    )
+                )) {
+                    Icon(Icons.Filled.CleaningServices, contentDescription = null, tint = MaterialTheme.colorScheme.onPrimary, modifier = Modifier.size(56.dp))
                 }
             }
-            Spacer(Modifier.height(18.dp))
-            Text("一键扫描垃圾文件", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
-            Spacer(Modifier.height(6.dp))
-            Text("扫描应用缓存、APK 残留、临时/日志、缩略图缓存与空文件夹", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
             Spacer(Modifier.height(20.dp))
-            Button(onClick = onScan, enabled = enabled, shape = RoundedCornerShape(16.dp), colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary, contentColor = MaterialTheme.colorScheme.onPrimary), modifier = Modifier.fillMaxWidth().height(54.dp)) {
+            Text("一键扫描垃圾文件", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
+            Spacer(Modifier.height(8.dp))
+            Text("扫描应用缓存、APK 残留、临时/日志、缩略图缓存与空文件夹", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant, textAlign = androidx.compose.ui.text.style.TextAlign.Center)
+            Spacer(Modifier.height(24.dp))
+            // 主按钮用渐变背景
+            Button(onClick = onScan, enabled = enabled, shape = RoundedCornerShape(18.dp), colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary, contentColor = MaterialTheme.colorScheme.onPrimary), modifier = Modifier.fillMaxWidth().height(56.dp)) {
                 Icon(Icons.Filled.CleaningServices, contentDescription = null)
                 Spacer(Modifier.width(8.dp))
-                Text("开始扫描", fontWeight = FontWeight.Bold)
+                Text("开始扫描", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
             }
             if (!enabled) {
-                Spacer(Modifier.height(8.dp))
+                Spacer(Modifier.height(10.dp))
                 Text("请先授予存储访问权限", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
             }
         }
@@ -402,35 +415,44 @@ private fun CleaningCard(state: UiState) {
 
 @Composable
 private fun CleanedCard(state: UiState, onRescan: () -> Unit) {
-    Card(shape = RoundedCornerShape(24.dp), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer), modifier = Modifier.fillMaxWidth()) {
-        Column(modifier = Modifier.fillMaxWidth().padding(28.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-            Surface(shape = CircleShape, color = MaterialTheme.colorScheme.primary, modifier = Modifier.size(72.dp)) {
-                Box(contentAlignment = Alignment.Center) { Icon(Icons.Filled.CheckCircle, contentDescription = null, tint = MaterialTheme.colorScheme.onPrimary, modifier = Modifier.size(44.dp)) }
-            }
-            Spacer(Modifier.height(16.dp))
-            Text("清理完成", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onPrimaryContainer)
-            Spacer(Modifier.height(8.dp))
-            Text("已释放 ${formatBytes(state.freedBytes)}", style = MaterialTheme.typography.titleLarge, color = MaterialTheme.colorScheme.onPrimaryContainer, fontWeight = FontWeight.SemiBold)
-            if (state.trashedCount > 0) {
-                Spacer(Modifier.height(4.dp))
-                Text("${state.trashedCount} 项已移入回收站，可前往「回收站」恢复", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onPrimaryContainer)
+    Card(shape = RoundedCornerShape(28.dp), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer), elevation = CardDefaults.cardElevation(defaultElevation = 0.dp), modifier = Modifier.fillMaxWidth()) {
+        Column(modifier = Modifier.fillMaxWidth().padding(32.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+            // 成功图标用渐变圆形容器
+            Surface(shape = CircleShape, modifier = Modifier.size(80.dp)) {
+                Box(contentAlignment = Alignment.Center, modifier = Modifier.background(
+                    androidx.compose.ui.graphics.Brush.linearGradient(
+                        listOf(MaterialTheme.colorScheme.primary, MaterialTheme.colorScheme.tertiary)
+                    )
+                )) {
+                    Icon(Icons.Filled.CheckCircle, contentDescription = null, tint = MaterialTheme.colorScheme.onPrimary, modifier = Modifier.size(48.dp))
+                }
             }
             Spacer(Modifier.height(20.dp))
-            Button(onClick = onRescan, modifier = Modifier.fillMaxWidth().height(50.dp), shape = RoundedCornerShape(16.dp)) { Icon(Icons.Filled.Refresh, contentDescription = null); Spacer(Modifier.width(8.dp)); Text("再扫描一次") }
+            Text("清理完成", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onPrimaryContainer)
+            Spacer(Modifier.height(8.dp))
+            Text("已释放 ${formatBytes(state.freedBytes)}", style = MaterialTheme.typography.headlineSmall, color = MaterialTheme.colorScheme.onPrimaryContainer, fontWeight = FontWeight.Bold)
+            if (state.trashedCount > 0) {
+                Spacer(Modifier.height(6.dp))
+                Text("${state.trashedCount} 项已移入回收站，可前往「回收站」恢复", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.85f))
+            }
+            Spacer(Modifier.height(24.dp))
+            Button(onClick = onRescan, modifier = Modifier.fillMaxWidth().height(52.dp), shape = RoundedCornerShape(18.dp), colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary, contentColor = MaterialTheme.colorScheme.onPrimary)) {
+                Icon(Icons.Filled.Refresh, contentDescription = null); Spacer(Modifier.width(8.dp)); Text("再扫描一次", fontWeight = FontWeight.Bold)
+            }
         }
     }
 }
 
 @Composable
 private fun BottomCleanBar(selectedCount: Int, selectedSize: Long, onClean: () -> Unit) {
-    Surface(color = MaterialTheme.colorScheme.surfaceContainer, shadowElevation = 8.dp, modifier = Modifier.fillMaxWidth()) {
-        Row(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 14.dp), verticalAlignment = Alignment.CenterVertically) {
+    Surface(color = MaterialTheme.colorScheme.surfaceContainer, shadowElevation = 12.dp, modifier = Modifier.fillMaxWidth()) {
+        Row(modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 16.dp), verticalAlignment = Alignment.CenterVertically) {
             Column(modifier = Modifier.weight(1f)) {
                 Text("已选 $selectedCount 项", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                Text(formatBytes(selectedSize), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                Text(formatBytes(selectedSize), style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
             }
-            Button(onClick = onClean, enabled = selectedCount > 0, shape = RoundedCornerShape(16.dp), colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary, contentColor = MaterialTheme.colorScheme.onPrimary), modifier = Modifier.height(50.dp)) {
-                Icon(Icons.Filled.DeleteSweep, contentDescription = null); Spacer(Modifier.width(8.dp)); Text("一键清理", fontWeight = FontWeight.Bold)
+            Button(onClick = onClean, enabled = selectedCount > 0, shape = RoundedCornerShape(18.dp), colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary, contentColor = MaterialTheme.colorScheme.onPrimary), modifier = Modifier.height(52.dp)) {
+                Icon(Icons.Filled.DeleteSweep, contentDescription = null); Spacer(Modifier.width(8.dp)); Text("一键清理", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
             }
         }
     }
