@@ -9,6 +9,7 @@ import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.map
 
 /** 空文件夹扫描范围 */
@@ -52,7 +53,9 @@ class SettingsRepository(private val context: Context) {
         val SCREEN_ORIENTATION = stringPreferencesKey("screen_orientation")
     }
 
-    val settings: Flow<AppSettings> = context.dataStore.data.map { p ->
+    val settings: Flow<AppSettings> = context.dataStore.data
+        .catch { /* DataStore 文件损坏时返回默认设置，避免崩溃 */ emit(androidx.datastore.preferences.core.emptyPreferences()) }
+        .map { p ->
         AppSettings(
             recycleBinEnabled = p[Keys.RECYCLE_BIN] ?: true,
             emptyFolderScope = runCatching {

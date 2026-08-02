@@ -73,15 +73,18 @@ class CleanerViewModel(app: Application) : AndroidViewModel(app) {
     val apkState: StateFlow<ApkUiState> = _apkState.asStateFlow()
 
     init {
-        refreshStorage()
-        updatePermission()
+        // 全部初始化操作加防御性异常捕获，防止任一步骤失败导致 ViewModel 创建崩溃 → Activity 闪退
+        runCatching { refreshStorage() }
+        runCatching { updatePermission() }
         // 启动时清理过期回收站
         viewModelScope.launch {
-            val s = settings.value
-            trashManager.cleanExpired(s.trashRetentionDays)
+            runCatching {
+                val s = settings.value
+                trashManager.cleanExpired(s.trashRetentionDays)
+            }
         }
         // 启动时自动检查 OTA 更新（静默，有新版本才提示）
-        checkForUpdate(silent = true)
+        runCatching { checkForUpdate(silent = true) }
     }
 
     fun updatePermission() {

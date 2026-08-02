@@ -3,6 +3,33 @@
 本项目版本号遵循 `主版本.次版本`（如 `2.2`），versionCode 单调递增。
 每次发布在 GitHub Releases 创建对应 tag（如 `v2.2`）并上传 APK。
 
+## [v2.4] - 2026-08-02
+
+### 修复（应用闪退问题）
+
+#### 主题兼容性（关键修复）
+- **`Theme.JingCunCleaner.Main` 的 parent 从 `android:Theme.DeviceDefault.Light.NoActionBar` 改为 `android:Theme.Material.Light.NoActionBar`**
+- 原因：`Theme.DeviceDefault` 在部分定制 ROM（车机 DiLink 等）上可能被精简或缺失，导致 `Resources$NotFoundException` 启动即闪退
+- `Theme.Material.Light.NoActionBar` 是所有 Android 5.0+ 设备 guaranteed 存在的系统主题
+
+#### MainActivity 启动防御
+- `enableEdgeToEdge()` 加 `runCatching` 包裹，防止部分定制 ROM 抛异常导致启动崩溃
+- DataStore Flow 加 `.catch{}` 操作符，DataStore 文件损坏时返回默认设置而非崩溃
+- `applyOrientation()` 加 `runCatching`，防止设置屏幕方向时异常
+
+#### SettingsRepository DataStore 异常处理
+- `settings` Flow 加 `.catch{}` 操作符，在 DataStore IO 异常时 emit `emptyPreferences()`（返回默认 AppSettings），避免 ViewModel `stateIn` 传播异常导致崩溃
+
+#### CleanerViewModel init 块防御
+- init 块所有操作（`refreshStorage`、`updatePermission`、`cleanExpired`、`checkForUpdate`）均加 `runCatching`
+- 任一初始化步骤失败不再导致 ViewModel 创建失败 → Activity 闪退
+
+### 技术细节
+- versionCode=6，versionName=2.4
+- minSdk 31, targetSdk 36, compileSdk 36
+
+---
+
 ## [v2.3] - 2026-08-02
 
 ### 修复（鲁棒性 / 健壮性）
