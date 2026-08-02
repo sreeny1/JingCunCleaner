@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<paths>
+    <!-- OTA 下载的 APK 存放在 externalCacheDir/updates -->
+    <external-cache-path name="updates" path="updates/" />
+    <cache-path name="cache" path="." />
+</paths>

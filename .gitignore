@@ -1,0 +1,27 @@
+# Android / Gradle 构建产物
+.gradle/
+build/
+app/build/
+*.apk
+*.aab
+*.ap_
+*.dex
+
+# Kotlin 编译缓存
+.kotlin/
+
+# 本地配置（含 SDK 路径，不应入库）
+local.properties
+
+# IDE 配置
+.idea/
+*.iml
+.vscode/
+
+# 签名密钥（敏感，不应入库；如需共享构建请单独分发）
+keystore/*.jks
+keystore/*.keystore
+
+# 操作系统杂项
+.DS_Store
+Thumbs.db
