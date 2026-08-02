@@ -4,6 +4,7 @@ import android.app.usage.StorageStatsManager
 import android.content.Context
 import android.content.pm.ApplicationInfo
 import android.content.pm.PackageManager
+import android.graphics.drawable.Drawable
 import android.os.Process
 import com.jingcun.cleaner.util.PermissionAdapter
 import kotlinx.coroutines.Dispatchers
@@ -29,6 +30,7 @@ class AppStorageScanner(private val context: Context) {
     data class AppStorageInfo(
         val packageName: String,
         val appName: String,
+        val icon: Drawable?,      // 应用原始图标，UI 渲染时使用；获取失败为 null
         val appBytes: Long,       // APK + 原生库大小
         val dataBytes: Long,      // 纯数据大小（已减去缓存），降级模式下为 0
         val cacheBytes: Long,     // 缓存大小，降级模式下为 0
@@ -95,6 +97,7 @@ class AppStorageScanner(private val context: Context) {
                     AppStorageInfo(
                         packageName = appInfo.packageName,
                         appName = name,
+                        icon = runCatching { pm.getApplicationIcon(appInfo) }.getOrNull(),
                         appBytes = appBytes,
                         dataBytes = dataBytes,
                         cacheBytes = cacheBytes,
@@ -145,6 +148,7 @@ class AppStorageScanner(private val context: Context) {
                 AppStorageInfo(
                     packageName = appInfo.packageName,
                     appName = name,
+                    icon = runCatching { pm.getApplicationIcon(appInfo) }.getOrNull(),
                     appBytes = totalApkSize,
                     dataBytes = 0L,
                     cacheBytes = 0L,

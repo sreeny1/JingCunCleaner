@@ -3,6 +3,24 @@
 本项目版本号遵循 `主版本.次版本`（如 `2.2`），versionCode 单调递增。
 每次发布在 GitHub Releases 创建对应 tag（如 `v2.2`）并上传 APK。
 
+## [v2.5] - 2026-08-02
+
+### 修复（应用图标显示）
+
+#### 应用占用空间排行图标修复
+- **`AppStorageInfo` 新增 `icon: Drawable?` 字段**，扫描时通过 `PackageManager.getApplicationIcon()` 获取应用原始图标
+- 标准通道（StorageStatsManager）与降级通道（sourceDir）均在创建 `AppStorageInfo` 时获取图标
+- 获取图标使用 `runCatching` 容错，失败时为 null
+- **UI 层 `AppStorageItemCard` 修复**：原硬编码 `Icons.Filled.Android` 通用图标，现渲染应用真实图标
+- 新增 `drawableToImageBitmap()` 辅助函数：将任意 `Drawable`（含 `AdaptiveIconDrawable` 自适应图标）绘制到 Bitmap 再转 `ImageBitmap`，兼容所有图标类型
+- 图标获取失败时回退到默认 Android 图标，保证健壮性
+
+### 技术细节
+- versionCode=7，versionName=2.5
+- minSdk 31, targetSdk 36, compileSdk 36
+
+---
+
 ## [v2.4] - 2026-08-02
 
 ### 修复（应用闪退问题）

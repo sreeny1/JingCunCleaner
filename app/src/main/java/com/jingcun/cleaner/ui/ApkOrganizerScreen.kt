@@ -31,6 +31,8 @@ import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Security
 import androidx.compose.material.icons.filled.Storage
+import androidx.compose.foundation.Image
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
@@ -50,6 +52,7 @@ import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -561,6 +564,8 @@ private fun AppStorageSummaryCard(state: CleanerViewModel.AppStorageUiState, onR
 private fun AppStorageItemCard(app: AppStorageScanner.AppStorageInfo, maxSize: Long) {
     val fraction = if (maxSize > 0) (app.totalBytes.toFloat() / maxSize).coerceIn(0f, 1f) else 0f
     val animFraction by animateFloatAsState(fraction, animationSpec = tween(500), label = "bar")
+    // 将应用图标 Drawable 转为 ImageBitmap（仅在图标非空且为 BitmapDrawable 时可行）
+    val iconBitmap = remember(app.icon) { drawableToImageBitmap(app.icon) }
     Card(
         shape = RoundedCornerShape(16.dp),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
@@ -571,7 +576,15 @@ private fun AppStorageItemCard(app: AppStorageScanner.AppStorageInfo, maxSize: L
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Surface(shape = CircleShape, color = MaterialTheme.colorScheme.secondaryContainer, modifier = Modifier.size(36.dp)) {
                     Box(contentAlignment = Alignment.Center) {
-                        Icon(Icons.Filled.Android, contentDescription = null, tint = MaterialTheme.colorScheme.onSecondaryContainer, modifier = Modifier.size(20.dp))
+                        if (iconBitmap != null) {
+                            Image(
+                                bitmap = iconBitmap,
+                                contentDescription = app.appName,
+                                modifier = Modifier.size(28.dp).clip(RoundedCornerShape(7.dp)),
+                            )
+                        } else {
+                            Icon(Icons.Filled.Android, contentDescription = null, tint = MaterialTheme.colorScheme.onSecondaryContainer, modifier = Modifier.size(20.dp))
+                        }
                     }
                 }
                 Spacer(Modifier.width(10.dp))
@@ -611,4 +624,21 @@ private fun AppStorageItemCard(app: AppStorageScanner.AppStorageInfo, maxSize: L
             }
         }
     }
+}
+
+/**
+ * 将 Drawable 转为 ImageBitmap，支持 BitmapDrawable 与自适应图标（AdaptiveIconDrawable）等任意 Drawable。
+ * 通过将 Drawable 绘制到目标尺寸的 Bitmap 上再转换，兼容所有图标类型。
+ * 失败或入参为 null 时返回 null（UI 回退到默认 Android 图标）。
+ */
+private fun drawableToImageBitmap(drawable: android.graphics.drawable.Drawable?): androidx.compose.ui.graphics.ImageBitmap? {
+    if (drawable == null) return null
+    return runCatching {
+        val sizePx = 108 // 与图标容器视觉匹配的高分辨率
+        val bitmap = android.graphics.Bitmap.createBitmap(sizePx, sizePx, android.graphics.Bitmap.Config.ARGB_8888)
+        val canvas = android.graphics.Canvas(bitmap)
+        drawable.setBounds(0, 0, sizePx, sizePx)
+        drawable.draw(canvas)
+        bitmap.asImageBitmap()
+    }.getOrNull()
 }
