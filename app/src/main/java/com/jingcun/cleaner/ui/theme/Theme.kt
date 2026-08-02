@@ -5,6 +5,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
+import com.jingcun.cleaner.data.ThemeMode
 
 private val LightColors = lightColorScheme(
     primary = GreenPrimary,
@@ -62,10 +63,15 @@ private val DarkColors = darkColorScheme(
 
 @Composable
 fun JingCunTheme(
-    darkTheme: Boolean = isSystemInDarkTheme(),
+    themeMode: ThemeMode = ThemeMode.SYSTEM,
     content: @Composable () -> Unit,
 ) {
-    // 使用绿色品牌主题（用户指定）。Material 3 组件规范已符合 Android 16 设计。
+    // 根据主题模式决定使用浅色还是深色配色
+    val darkTheme = when (themeMode) {
+        ThemeMode.DAY -> false
+        ThemeMode.NIGHT -> true
+        ThemeMode.SYSTEM -> isSystemInDarkTheme()
+    }
     val colorScheme = if (darkTheme) DarkColors else LightColors
     MaterialTheme(
         colorScheme = colorScheme,

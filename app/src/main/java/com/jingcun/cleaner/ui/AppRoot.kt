@@ -132,7 +132,8 @@ fun AppRoot(windowSizeClass: WindowSizeClass) {
  */
 @Composable
 private fun UpdateDialog(vm: CleanerViewModel, state: CleanerViewModel.UpdateUiState) {
-    val show = state.phase in listOf(
+    // 弹窗仅在未关闭且处于有新版本/下载中/已下载时显示
+    val show = !state.dialogDismissed && state.phase in listOf(
         CleanerViewModel.UpdatePhase.AVAILABLE,
         CleanerViewModel.UpdatePhase.DOWNLOADING,
         CleanerViewModel.UpdatePhase.DOWNLOADED,

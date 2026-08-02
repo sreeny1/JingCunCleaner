@@ -31,6 +31,13 @@ enum class ScreenOrientation(val title: String, val desc: String) {
     PORTRAIT("竖屏", "强制竖屏，适合手机");
 }
 
+/** 主题模式：日间 / 夜间 / 跟随系统 */
+enum class ThemeMode(val title: String, val desc: String) {
+    DAY("日间", "始终使用浅色主题"),
+    NIGHT("夜间", "始终使用深色主题"),
+    SYSTEM("跟随系统", "随系统深色模式自动切换");
+}
+
 /** 应用设置 */
 data class AppSettings(
     val recycleBinEnabled: Boolean = true,
@@ -39,6 +46,7 @@ data class AppSettings(
     val trashRetentionDays: Int = 7,
     val apkOrganizeMode: ApkOrganizeMode = ApkOrganizeMode.MOVE,
     val screenOrientation: ScreenOrientation = ScreenOrientation.AUTO,
+    val themeMode: ThemeMode = ThemeMode.SYSTEM,
 )
 
 private val Context.dataStore: DataStore<Preferences> by preferencesDataStore(name = "settings")
@@ -51,6 +59,7 @@ class SettingsRepository(private val context: Context) {
         val TRASH_RETENTION = intPreferencesKey("trash_retention_days")
         val APK_MODE = stringPreferencesKey("apk_organize_mode")
         val SCREEN_ORIENTATION = stringPreferencesKey("screen_orientation")
+        val THEME_MODE = stringPreferencesKey("theme_mode")
     }
 
     val settings: Flow<AppSettings> = context.dataStore.data
@@ -69,6 +78,9 @@ class SettingsRepository(private val context: Context) {
             screenOrientation = runCatching {
                 ScreenOrientation.valueOf(p[Keys.SCREEN_ORIENTATION] ?: ScreenOrientation.AUTO.name)
             }.getOrDefault(ScreenOrientation.AUTO),
+            themeMode = runCatching {
+                ThemeMode.valueOf(p[Keys.THEME_MODE] ?: ThemeMode.SYSTEM.name)
+            }.getOrDefault(ThemeMode.SYSTEM),
         )
     }
 
@@ -89,4 +101,7 @@ class SettingsRepository(private val context: Context) {
 
     suspend fun setScreenOrientation(v: ScreenOrientation) =
         context.dataStore.edit { it[Keys.SCREEN_ORIENTATION] = v.name }
+
+    suspend fun setThemeMode(v: ThemeMode) =
+        context.dataStore.edit { it[Keys.THEME_MODE] = v.name }
 }

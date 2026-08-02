@@ -244,6 +244,7 @@ class CleanerViewModel(app: Application) : AndroidViewModel(app) {
     fun setTrashRetentionDays(v: Int) = viewModelScope.launch { settingsRepo.setTrashRetentionDays(v) }
     fun setApkOrganizeMode(v: ApkOrganizeMode) = viewModelScope.launch { settingsRepo.setApkOrganizeMode(v) }
     fun setScreenOrientation(v: ScreenOrientation) = viewModelScope.launch { settingsRepo.setScreenOrientation(v) }
+    fun setThemeMode(v: com.jingcun.cleaner.data.ThemeMode) = viewModelScope.launch { settingsRepo.setThemeMode(v) }
 
     // ---- 回收站 ----
     fun refreshTrash() = viewModelScope.launch { _trashItems.value = trashManager.list() }
@@ -417,6 +418,8 @@ class CleanerViewModel(app: Application) : AndroidViewModel(app) {
         val silent: Boolean = false,
         /** 是否来自用户手动触发（用于决定是否提示"已是最新版本"） */
         val manual: Boolean = false,
+        /** 更新弹窗是否已被用户关闭（关闭后设置页仍可下载，弹窗不再自动弹出） */
+        val dialogDismissed: Boolean = false,
     ) {
         val percent: Float get() = if (totalBytes > 0) downloadedBytes.toFloat() / totalBytes else 0f
     }
@@ -535,19 +538,41 @@ class CleanerViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    /** 关闭更新提示（用户点击"稍后"或"取消"） */
+    /** 关闭更新弹窗（用户点击"稍后"或"取消"）：保留状态，设置页仍可操作 */
     fun dismissUpdate() {
-        updateJob?.cancel()
-        if (_updateState.value.phase == UpdatePhase.DOWNLOADING) {
-            updateInstaller.cleanDownloaded()
+        val current = _updateState.value
+        when (current.phase) {
+            UpdatePhase.DOWNLOADING -> {
+                // 下载中取消：停止下载并清理半成品文件
+                updateJob?.cancel()
+                updateInstaller.cleanDownloaded()
+                _updateState.value = current.copy(phase = UpdatePhase.AVAILABLE, dialogDismissed = true)
+            }
+            UpdatePhase.AVAILABLE -> {
+                // 有新版本但暂不更新：标记弹窗已关闭，设置页仍显示下载按钮
+                _updateState.value = current.copy(dialogDismissed = true)
+            }
+            UpdatePhase.DOWNLOADED -> {
+                // 已下载但暂不安装：标记弹窗已关闭，设置页仍显示安装按钮
+                _updateState.value = current.copy(dialogDismissed = true)
+            }
+            else -> {
+                _updateState.value = UpdateUiState()
+            }
         }
+    }
+
+    /** 完全清除更新状态（用户主动重新检查时调用） */
+    fun clearUpdateState() {
+        updateJob?.cancel()
+        updateInstaller.cleanDownloaded()
         downloadedApk = null
         _updateState.value = UpdateUiState()
     }
 
     /** 重新检查更新（用户在错误状态下点击重试） */
     fun retryCheckUpdate() {
-        dismissUpdate()
+        clearUpdateState()
         checkForUpdate(silent = false)
     }
 }

@@ -11,8 +11,11 @@ import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
 import androidx.lifecycle.lifecycleScope
 import com.jingcun.cleaner.data.ScreenOrientation
 import com.jingcun.cleaner.data.SettingsRepository
+import com.jingcun.cleaner.data.ThemeMode
 import com.jingcun.cleaner.ui.AppRoot
 import com.jingcun.cleaner.ui.theme.JingCunTheme
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
 import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
@@ -31,6 +34,11 @@ class MainActivity : ComponentActivity() {
 
         // 持续监听屏幕方向设置：启动时应用上次设置，运行时切换立即生效
         val repo = SettingsRepository(application)
+        // 主题模式 StateFlow：供 Compose collectAsState 实时响应切换
+        val themeModeFlow = repo.settings
+            .catch { emit(com.jingcun.cleaner.data.AppSettings()) }
+            .map { it.themeMode }
+            .distinctUntilChanged()
         lifecycleScope.launch {
             repo.settings
                 .catch { /* DataStore 损坏时静默忽略，使用默认值 */ }
@@ -40,7 +48,8 @@ class MainActivity : ComponentActivity() {
         }
 
         setContent {
-            JingCunTheme {
+            val themeMode by themeModeFlow.collectAsState(initial = ThemeMode.SYSTEM)
+            JingCunTheme(themeMode = themeMode) {
                 AppRoot(windowSizeClass = calculateWindowSizeClass(this@MainActivity))
             }
         }
