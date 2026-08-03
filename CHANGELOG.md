@@ -3,6 +3,29 @@
 本项目版本号遵循 `主版本.次版本`（如 `2.2`），versionCode 单调递增。
 每次发布在 GitHub Releases 创建对应 tag（如 `v2.2`）并上传 APK。
 
+## [v2.7] - 2026-08-03
+
+### 修复（扫描误删自身目录）
+- **扫描时排除本应用自身生成的目录**：`walkPublic` 和 `scanEmptyFolders` 两个扫描路径均跳过以下目录，避免误删回收站文件和 APK 整理成果
+  - `.JingCunTrash/`（回收站目录）
+  - `apk整理/`（APK 整理输出目录）
+- 新增 `appGeneratedDirs` 排除集合，在目录遍历时 `continue` 跳过
+
+### 新增（垃圾文件识别规则增强）
+- 参考开源项目 [SD Maid SE](https://github.com/d4rken-org/sdmaid-se) 的过滤器规则，新增 `SYSTEM_JUNK`（系统残留文件）分类
+- **新增垃圾文件名精确匹配**（11 项）：`.DS_Store`、`desktop.ini`、`thumbs.db`、`.INSTALLATION`、`.imei.txt`、`bt_activity_pkt.txt.last`、`.mmsyscache`、`.tlocalcookieid`、`.wps_preloaded_2.txt`、`.oukdtft`、`ppy_cross`
+- **新增垃圾文件名前缀匹配**（2 项）：`._`（macOS AppleDouble 文件）、`sdm_write_test-`（SD 卡写入测试文件）
+- **新增垃圾目录名匹配**（8 项）：`LOST.DIR`、`.Trashes`、`.Trash`、`.spotlight`、`.Spotlight-V100`、`.fseventsd`、`.TemporaryItems`、`.Trash-1000`
+- **新增广告 SDK 缓存目录前缀匹配**（15 项）：`ApplifierVideoCache`、`burstlyVideoCache`、`UnityAdsVideoCache`、`ApplifierImageCache`、`burstlyImageCache`、`UnityAdsImageCache`、`__chartboost`、`.chartboost`、`adhub`、`.mobvista`、`.goadsdk`、`.goproduct`、`.mologiq`、`.Adcenix`
+- 垃圾目录和广告缓存目录的内容文件全部标记为 `SYSTEM_JUNK` 分类
+- HomeScreen 新增 `SYSTEM_JUNK` 分类的图标（`Icons.Filled.BugReport`）
+
+### 技术细节
+- versionCode=9，versionName=2.7
+- minSdk 31, targetSdk 36, compileSdk 36
+
+---
+
 ## [v2.6] - 2026-08-02
 
 ### 新增（主题模式）

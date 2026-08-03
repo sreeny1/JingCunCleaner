@@ -44,6 +44,33 @@ class ScanEngine(
         "audiobooks", "android", "lost.dir", ".androidsecure"
     )
 
+    /** 本应用自身生成的目录，扫描时完全跳过，避免误删回收站和 APK 整理成果 */
+    private val appGeneratedDirs = setOf(".jingcuntrash", "apk整理")
+
+    /** 系统残留垃圾文件名（精确匹配，参考 SD Maid SE MacFilesFilter / AnalyticsFilter） */
+    private val junkFileNames = setOf(
+        ".ds_store", "desktop.ini", "thumbs.db", ".installation", ".imei.txt",
+        "bt_activity_pkt.txt.last", ".mmsyscache", ".tlocalcookieid",
+        ".wps_preloaded_2.txt", ".oukdtft", "ppy_cross"
+    )
+
+    /** 系统残留垃圾文件名前缀（macOS AppleDouble 等，参考 SD Maid SE MacFilesFilter） */
+    private val junkFilePrefixes = setOf("._", "sdm_write_test-")
+
+    /** 系统残留垃圾目录名，扫描其内容作为垃圾（参考 SD Maid SE LostDirFilter / MacFilesFilter） */
+    private val junkDirNames = setOf(
+        "lost.dir", ".trashes", ".trash", ".spotlight", ".spotlight-v100",
+        ".fseventsd", ".temporaryitems", ".trash-1000"
+    )
+
+    /** 广告 SDK 缓存目录名前缀（参考 SD Maid SE AdvertisementFilter） */
+    private val adCachePrefixes = setOf(
+        "applifiervideocache", "burstlyvideocache", "unityadsvideocache",
+        "applifierimagecache", "burstlyimagecache", "unityadsimagecache",
+        "__chartboost", ".chartboost", "adhub", ".mobvista", ".goadsdk",
+        ".goproduct", ".mologiq", ".adcenix"
+    )
+
     /** 扫描入口 */
     suspend fun scan(
         emptyFolderScope: EmptyFolderScope = EmptyFolderScope.ROOT_ONLY,
@@ -192,16 +219,25 @@ class ScanEngine(
             for (c in children) {
                 if (c.isDirectory) {
                     val name = c.name.lowercase()
+                    // 跳过本应用自身生成的目录（回收站 + APK 整理），避免误删
+                    if (appGeneratedDirs.contains(name)) continue
                     if (name == "android") continue // Android 文件夹单独处理缓存
                     // 跳过版本控制目录，避免破坏工程文件
                     if (name == ".git" || name == ".svn" || name == ".idea") continue
                     if (thumbnailNames.contains(name)) {
                         collectFiles(c, JunkCategory.THUMBNAIL, out, onFile)
+                    } else if (junkDirNames.contains(name)) {
+                        // 系统残留垃圾目录（LOST.DIR、.Trashes 等），内容标记为系统垃圾
+                        collectFiles(c, JunkCategory.SYSTEM_JUNK, out, onFile)
+                    } else if (adCachePrefixes.any { name.startsWith(it) }) {
+                        // 广告 SDK 缓存目录
+                        collectFiles(c, JunkCategory.SYSTEM_JUNK, out, onFile)
                     } else {
                         stack.push(c)
                     }
                 } else {
                     onFile(c.absolutePath)
+                    val lowerName = c.name.lowercase()
                     val ext = c.extension.lowercase()
                     when {
                         ext == "apk" || ext == "apks" -> {
@@ -213,6 +249,16 @@ class ScanEngine(
                         tempExtensions.contains(ext) -> {
                             val size = runCatching { c.length() }.getOrDefault(0L)
                             out.add(JunkItem(c.absolutePath, size, JunkCategory.TEMP_LOG, false))
+                        }
+                        // 系统残留文件（.DS_Store、desktop.ini、thumbs.db 等）
+                        junkFileNames.contains(lowerName) -> {
+                            val size = runCatching { c.length() }.getOrDefault(0L)
+                            out.add(JunkItem(c.absolutePath, size, JunkCategory.SYSTEM_JUNK, false))
+                        }
+                        // macOS AppleDouble 文件（._ 前缀）等
+                        junkFilePrefixes.any { lowerName.startsWith(it) } -> {
+                            val size = runCatching { c.length() }.getOrDefault(0L)
+                            out.add(JunkItem(c.absolutePath, size, JunkCategory.SYSTEM_JUNK, false))
                         }
                     }
                 }
@@ -250,6 +296,8 @@ class ScanEngine(
             val children = runCatching { root.listFiles() }.getOrNull() ?: return
             for (c in children) {
                 if (!c.isDirectory) continue
+                // 跳过本应用自身生成的目录
+                if (appGeneratedDirs.contains(c.name.lowercase())) continue
                 onFile(c.absolutePath)
                 if (isProtectedRoot(c, root)) continue
                 // 关键修复：listFiles 返回 null 时不视为空目录（无法访问 ≠ 空），跳过避免误删
@@ -270,6 +318,8 @@ class ScanEngine(
             val children = runCatching { dir.listFiles() }.getOrNull() ?: continue
             for (c in children) {
                 if (c.isDirectory) {
+                    // 跳过本应用自身生成的目录，不递归进入
+                    if (appGeneratedDirs.contains(c.name.lowercase())) continue
                     allDirs.add(c)
                     stack.push(c)
                     onFile(c.absolutePath)

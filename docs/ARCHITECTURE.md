@@ -132,7 +132,12 @@ UI 根据 phase 决定显示什么：
 - `TEMP_LOG` — 临时/日志文件（扩展名 `tmp` `temp` `log` `bak` `old`）
 - `APK_RESIDUAL` — APK 残留（已安装且版本冗余的安装包）
 - `THUMBNAIL` — 缩略图缓存（`.thumbnails` `.thumbs` 等）
+- `SYSTEM_JUNK` — 系统残留文件（.DS_Store、desktop.ini、thumbs.db、LOST.DIR、广告缓存等，参考 SD Maid SE 规则）
 - `EMPTY_FOLDER` — 空文件夹（自底向上判定）
+
+扫描排除目录（`appGeneratedDirs`）：
+- `.JingCunTrash/` — 回收站目录，避免误删待恢复文件
+- `apk整理/` — APK 整理输出目录，避免误删已整理的 APK
 
 ### TrashManager
 

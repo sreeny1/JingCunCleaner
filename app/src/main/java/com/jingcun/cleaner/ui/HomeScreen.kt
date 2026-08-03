@@ -30,6 +30,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Android
+import androidx.compose.material.icons.filled.BugReport
 import androidx.compose.material.icons.filled.Cached
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.CleaningServices
@@ -272,7 +273,7 @@ private fun IdleScanCard(enabled: Boolean, onScan: () -> Unit) {
             Spacer(Modifier.height(20.dp))
             Text("一键扫描垃圾文件", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
             Spacer(Modifier.height(8.dp))
-            Text("扫描应用缓存、APK 残留、临时/日志、缩略图缓存与空文件夹", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant, textAlign = androidx.compose.ui.text.style.TextAlign.Center)
+            Text("扫描应用缓存、APK 残留、临时/日志、缩略图缓存、系统残留与空文件夹", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant, textAlign = androidx.compose.ui.text.style.TextAlign.Center)
             Spacer(Modifier.height(24.dp))
             // 主按钮用渐变背景
             Button(onClick = onScan, enabled = enabled, shape = RoundedCornerShape(18.dp), colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary, contentColor = MaterialTheme.colorScheme.onPrimary), modifier = Modifier.fillMaxWidth().height(56.dp)) {
@@ -298,6 +299,7 @@ private fun FeatureHintCard() {
             FeatureRow(Icons.Filled.Android, "APK 残留", "已安装版本的旧安装包")
             FeatureRow(Icons.Filled.Image, "缩略图缓存", ".thumbnails 等缩略图")
             FeatureRow(Icons.Filled.Description, "临时/日志", ".tmp .log .bak .old")
+            FeatureRow(Icons.Filled.BugReport, "系统残留", ".DS_Store LOST.DIR 等")
             FeatureRow(Icons.Filled.FolderOpen, "空文件夹", "递归识别空目录")
         }
     }
@@ -463,5 +465,6 @@ private fun categoryIcon(cat: JunkCategory): ImageVector = when (cat) {
     JunkCategory.APK_RESIDUAL -> Icons.Filled.Android
     JunkCategory.THUMBNAIL -> Icons.Filled.Image
     JunkCategory.TEMP_LOG -> Icons.Filled.Description
+    JunkCategory.SYSTEM_JUNK -> Icons.Filled.BugReport
     JunkCategory.EMPTY_FOLDER -> Icons.Filled.FolderOpen
 }
