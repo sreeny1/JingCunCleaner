@@ -2,7 +2,7 @@
 
 > 面向 Android 车机、平板、手机的一体化存储清理工具。扫描垃圾文件 → 一键清理 → 回收站保护 → APK 整理 → OTA 在线更新，全流程离线可用，无需注册账号。
 
-- 当前版本：**v2.7**（versionCode=9）
+- 当前版本：**v2.7.1**（versionCode=10）
 - 最低系统：Android 12（API 31）
 - 目标系统：Android 16（API 36）
 - 界面框架：Jetpack Compose + Material 3

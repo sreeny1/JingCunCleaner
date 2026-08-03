@@ -317,12 +317,18 @@ private fun FeatureRow(icon: ImageVector, title: String, desc: String) {
 
 @Composable
 private fun ScanningCard(state: UiState) {
+    val animProgress by animateFloatAsState(state.progress.coerceIn(0f, 1f), animationSpec = tween(300), label = "scan")
     Card(shape = RoundedCornerShape(24.dp), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface), modifier = Modifier.fillMaxWidth()) {
         Column(modifier = Modifier.fillMaxWidth().padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally) {
             CircularProgressIndicator(color = MaterialTheme.colorScheme.primary, strokeWidth = 4.dp)
             Spacer(Modifier.height(16.dp))
             Text("正在扫描…", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-            Spacer(Modifier.height(6.dp))
+            Spacer(Modifier.height(10.dp))
+            LinearProgressIndicator(
+                progress = { animProgress },
+                modifier = Modifier.fillMaxWidth().height(6.dp).clip(RoundedCornerShape(3.dp)),
+            )
+            Spacer(Modifier.height(8.dp))
             Text(state.currentPath.ifEmpty { "准备中…" }, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 2, overflow = TextOverflow.Ellipsis)
         }
     }
@@ -330,7 +336,9 @@ private fun ScanningCard(state: UiState) {
 
 @Composable
 private fun SummaryCard(state: UiState, vm: CleanerViewModel) {
-    val allSelected = state.results.values.flatten().isNotEmpty() && state.selected.size == state.results.values.flatten().size
+    // 缓存 flatten 结果，避免重复计算（每次重组都创建新列表）
+    val allItems = remember(state.results) { state.results.values.flatten() }
+    val allSelected = allItems.isNotEmpty() && state.selected.size == allItems.size
     Card(shape = RoundedCornerShape(24.dp), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer), modifier = Modifier.fillMaxWidth()) {
         Column(modifier = Modifier.padding(20.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -350,6 +358,8 @@ private fun CategoryCard(cat: JunkCategory, list: List<JunkItem>, selected: Set<
     val allChecked = list.isNotEmpty() && list.all { it.path in selected }
     val catSize = list.sumOf { it.size }
     val selectedInCat = list.count { it.path in selected }
+    // 缓存选中项总大小，避免展开时每次重组都重新 filter+sum
+    val selectedSize = remember(list, selected) { list.filter { it.path in selected }.sumOf { it.size } }
     Card(shape = RoundedCornerShape(20.dp), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface), elevation = CardDefaults.cardElevation(defaultElevation = 1.dp), modifier = Modifier.fillMaxWidth()) {
         Column {
             Row(modifier = Modifier.fillMaxWidth().clickable { expanded = !expanded }.padding(horizontal = 8.dp, vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -363,14 +373,14 @@ private fun CategoryCard(cat: JunkCategory, list: List<JunkItem>, selected: Set<
                     Text(if (cat == JunkCategory.EMPTY_FOLDER) "${list.size} 个空文件夹" else "${list.size} 项 · ${formatBytes(catSize)}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
                 if (cat != JunkCategory.EMPTY_FOLDER && selectedInCat > 0) {
-                    Text(formatBytes(list.filter { it.path in selected }.sumOf { it.size }), style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold)
+                    Text(formatBytes(selectedSize), style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold)
                 }
                 IconButton(onClick = { expanded = !expanded }) { Icon(if (expanded) Icons.Filled.ExpandLess else Icons.Filled.ExpandMore, contentDescription = if (expanded) "收起" else "展开") }
             }
             AnimatedVisibility(visible = expanded, enter = fadeIn(tween(150)), exit = fadeOut(tween(100))) {
                 Column {
                     HorizontalDivider()
-                    list.take(60).forEach { item ->
+                    list.take(50).forEach { item ->
                         val checked = item.path in selected
                         Row(modifier = Modifier.fillMaxWidth().clickable { vm.toggleSelect(item.path) }.padding(horizontal = 16.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
                             Checkbox(checked = checked, onCheckedChange = { vm.toggleSelect(item.path) })
@@ -379,7 +389,7 @@ private fun CategoryCard(cat: JunkCategory, list: List<JunkItem>, selected: Set<
                             if (!item.isDirectory && item.size > 0) Text(formatBytes(item.size), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
                     }
-                    if (list.size > 60) Text("…还有 ${list.size - 60} 项", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp))
+                    if (list.size > 50) Text("…还有 ${list.size - 50} 项", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp))
                 }
             }
         }

@@ -3,6 +3,25 @@
 本项目版本号遵循 `主版本.次版本`（如 `2.2`），versionCode 单调递增。
 每次发布在 GitHub Releases 创建对应 tag（如 `v2.2`）并上传 APK。
 
+## [v2.7.1] - 2026-08-04
+
+### 优化（扫描进度体验）
+- **扫描进度条改为渐变更新**：修复扫描时进度卡在固定值（0.05/0.30/0.55/0.80）不渐变的问题，每个阶段内按已扫描项数线性递增，进度条更流畅
+- **扫描卡片新增线性进度条**：`ScanningCard` 在 `CircularProgressIndicator` 下方增加 `LinearProgressIndicator`，用户可直观看到当前阶段进度百分比
+- **进度回调频率提升**：`ScanEngine.report` 从每 40 项回调一次改为每 25 项，进度更新更及时
+
+### 优化（性能与内存）
+- **SummaryCard 缓存 flatten 结果**：用 `remember(state.results)` 缓存 `flatten()` 结果，避免每次重组都创建新列表
+- **CategoryCard 缓存选中项大小**：用 `remember(list, selected)` 缓存 `filter + sumOf` 结果，避免展开列表时每次重组都重新计算
+- **CategoryCard 列表渲染数量优化**：展开时显示项数从 60 降为 50，减少一次性渲染的 Composable 数量
+- **应用图标 Bitmap 内存优化**：`drawableToImageBitmap` 的 Bitmap 尺寸从 108px 降为 72px，单图标内存节省约 55%，在 200+ 应用列表中显著降低内存峰值
+
+### 技术细节
+- versionCode=10，versionName=2.7.1
+- minSdk 31, targetSdk 36, compileSdk 36
+
+---
+
 ## [v2.7] - 2026-08-03
 
 ### 修复（扫描误删自身目录）

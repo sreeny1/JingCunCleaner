@@ -82,7 +82,8 @@ class ScanEngine(
         // 分 4 阶段递增进度，每阶段完成后推进 25%，避免卡在固定值
         fun report(path: String) {
             scanned++
-            if (scanned % 40 == 0) onProgress(Progress(scanned, path))
+            // 每 25 项回调一次进度，比 40 更流畅
+            if (scanned % 25 == 0) onProgress(Progress(scanned, path))
         }
 
         // 阶段 1：本应用自身缓存（0~25%）

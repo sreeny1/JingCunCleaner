@@ -129,15 +129,19 @@ class CleanerViewModel(app: Application) : AndroidViewModel(app) {
             try {
                 val s = settings.value
                 val result = engine.scan(s.emptyFolderScope) { p ->
-                // 根据阶段文案映射进度区间，避免卡在固定值
+                // 根据阶段文案映射进度区间，阶段内按已扫描项数渐变，避免卡在固定值
                 val progress = when {
-                    p.currentPath.startsWith("扫描应用缓存") -> 0.05f
-                    p.currentPath.startsWith("扫描应用公共缓存") -> 0.30f
-                    p.currentPath.startsWith("扫描公共目录") -> 0.55f
-                    p.currentPath.startsWith("扫描空文件夹") -> 0.80f
-                    p.currentPath == "扫描完成" -> 0.95f
+                    p.currentPath.startsWith("扫描应用缓存") ->
+                        0.02f + (p.scanned.toFloat() / 500f).coerceAtMost(0.23f)
+                    p.currentPath.startsWith("扫描应用公共缓存") ->
+                        0.25f + (p.scanned.toFloat() / 1000f).coerceAtMost(0.25f)
+                    p.currentPath.startsWith("扫描公共目录") ->
+                        0.50f + (p.scanned.toFloat() / 3000f).coerceAtMost(0.30f)
+                    p.currentPath.startsWith("扫描空文件夹") ->
+                        0.80f + (p.scanned.toFloat() / 1000f).coerceAtMost(0.18f)
+                    p.currentPath == "扫描完成" -> 1.0f
                     else -> 0.5f
-                }
+                }.coerceIn(0f, 1f)
                 _state.update { it.copy(currentPath = p.currentPath, progress = progress) }
             }
             val grouped = result.items.groupBy { it.category }

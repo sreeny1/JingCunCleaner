@@ -634,7 +634,8 @@ private fun AppStorageItemCard(app: AppStorageScanner.AppStorageInfo, maxSize: L
 private fun drawableToImageBitmap(drawable: android.graphics.drawable.Drawable?): androidx.compose.ui.graphics.ImageBitmap? {
     if (drawable == null) return null
     return runCatching {
-        val sizePx = 108 // 与图标容器视觉匹配的高分辨率
+        // 72px 已足够覆盖 36dp 容器在 xxxhdpi 下的显示，相比 108px 节省 55% 内存
+        val sizePx = 72
         val bitmap = android.graphics.Bitmap.createBitmap(sizePx, sizePx, android.graphics.Bitmap.Config.ARGB_8888)
         val canvas = android.graphics.Canvas(bitmap)
         drawable.setBounds(0, 0, sizePx, sizePx)
