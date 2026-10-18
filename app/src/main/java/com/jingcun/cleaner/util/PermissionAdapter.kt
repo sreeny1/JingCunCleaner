@@ -12,15 +12,13 @@ import android.provider.Settings
  * 运行时权限适配器：自动检测设备能力并选择合适的授权路径。
  *
  * 设计目标：单 APK 兼容两类系统
- * - 标准系统（普通手机/平板）：走 MANAGE_EXTERNAL_STORAGE 授权页 + PACKAGE_USAGE_STATS 授权页
- * - 车机多媒体系统（如比亚迪 DiLink）：授权页被精简，自动降级到运行时弹窗权限
+ * - 标准系统（普通手机/平板）：走 MANAGE_EXTERNAL_STORAGE 授权页
+ * - 车机多媒体系统（授权页被精简）：自动降级到 READ/WRITE_EXTERNAL_STORAGE 运行时权限
  *
  * 降级检测原理：用 PackageManager.resolveActivity() 检测目标授权 Activity 是否存在。
  * 车机精简了系统设置页时，resolveActivity 返回 null，触发降级路径。
  *
- * 参考：
- * - Android 官方文档：Environment.isExternalStorageManager() 判断全盘权限
- * - AnExplorer 在比亚迪 DiLink 上的兼容方案：旧版 READ/WRITE_EXTERNAL_STORAGE 运行时授权
+ * 参考：Android 官方文档 Environment.isExternalStorageManager() 判断全盘权限
  */
 class PermissionAdapter(private val context: Context) {
 
@@ -57,31 +55,12 @@ class PermissionAdapter(private val context: Context) {
         return intent.resolveActivity(context.packageManager) != null
     }
 
-    /** 是否支持使用情况访问授权页（车机精简后返回 false） */
-    fun isUsageAccessSettingsAvailable(): Boolean {
-        // 关键修复：ACTION_USAGE_ACCESS_SETTINGS 不接受 package data，加 data 后部分 ROM
-        // resolveActivity 返回 null 误判为不可用，导致错误降级。去掉 data。
-        val intent = Intent(Settings.ACTION_USAGE_ACCESS_SETTINGS)
-        return intent.resolveActivity(context.packageManager) != null
-    }
-
     /** 创建全盘存储授权 Intent（不可用时返回 null） */
     fun createFullStorageIntent(): Intent? {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) return null
         if (!isFullStorageSettingsAvailable()) return null
         return Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION).apply {
             data = Uri.parse("package:${context.packageName}")
-            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-        }
-    }
-
-    /** 创建使用情况访问授权 Intent（不可用时返回 null） */
-    fun createUsageAccessIntent(): Intent? {
-        if (!isUsageAccessSettingsAvailable()) return null
-        // 关键修复：ACTION_USAGE_ACCESS_SETTINGS 是应用列表页，不接受 package data。
-        // 加 data 后部分 ROM 跳转失败或 resolveActivity 返回 null。去掉 data，
-        // 用户在授权列表页手动找到本应用即可。
-        return Intent(Settings.ACTION_USAGE_ACCESS_SETTINGS).apply {
             addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         }
     }
@@ -103,7 +82,4 @@ class PermissionAdapter(private val context: Context) {
 
     /** 综合判断：是否可以开始全盘扫描 */
     fun canScanStorage(): Boolean = getStorageMode() != StorageMode.NONE
-
-    /** 是否为降级模式（车机或未获全盘权限时） */
-    fun isLegacyMode(): Boolean = getStorageMode() == StorageMode.LEGACY
 }

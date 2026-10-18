@@ -12,33 +12,29 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.InstallMobile
 import androidx.compose.material.icons.filled.SystemUpdate
 import androidx.compose.material3.Button
-import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
-import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
@@ -51,15 +47,17 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.jingcun.cleaner.data.ApkOrganizeMode
-import com.jingcun.cleaner.data.EmptyFolderScope
 import com.jingcun.cleaner.data.ScreenOrientation
 import com.jingcun.cleaner.data.ThemeMode
 import com.jingcun.cleaner.util.formatBytes
 
+/**
+ * 设置页（简约）：外观（主题模式）、屏幕方向、归纳设置、在线更新、关于。
+ */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SettingsScreen() {
-    val vm: CleanerViewModel = viewModel()
+    val vm: ApkViewModel = viewModel()
     val settings by vm.settings.collectAsState()
     val updateState by vm.updateState.collectAsState()
 
@@ -79,62 +77,37 @@ fun SettingsScreen() {
         ) {
             // 在线更新（OTA）
             item { UpdateCheckCard(vm = vm, state = updateState) }
-            // 回收站
+            // 主题模式
             item {
-                SettingCard("回收站", "删除文件时移入回收站，可一键恢复，避免误删") {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text("启用回收站", modifier = Modifier.weight(1f), style = MaterialTheme.typography.bodyLarge)
-                        Switch(checked = settings.recycleBinEnabled, onCheckedChange = { vm.setRecycleBinEnabled(it) })
-                    }
-                    Spacer(Modifier.height(8.dp))
-                    Text("保留天数：${settings.trashRetentionDays} 天", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    Spacer(Modifier.height(8.dp))
+                SettingCard("外观", "日间 / 夜间 / 跟随系统") {
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        listOf(3, 7, 14, 30).forEach { d ->
+                        ThemeMode.entries.forEach { mode ->
                             FilterChip(
-                                selected = settings.trashRetentionDays == d,
-                                onClick = { vm.setTrashRetentionDays(d) },
-                                label = { Text("$d 天") },
+                                selected = settings.themeMode == mode,
+                                onClick = { vm.setThemeMode(mode) },
+                                label = { Text(mode.title) },
                             )
                         }
                     }
                 }
             }
-            // 空文件夹扫描范围
+            // 屏幕方向（车机/平板实用）
             item {
-                SettingCard("空文件夹扫描", "设置扫描空文件夹的范围") {
+                SettingCard("屏幕方向", "适合无重力感应的车机/平板设备") {
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        FilterChip(
-                            selected = settings.emptyFolderScope == EmptyFolderScope.ROOT_ONLY,
-                            onClick = { vm.setEmptyFolderScope(EmptyFolderScope.ROOT_ONLY) },
-                            label = { Text(EmptyFolderScope.ROOT_ONLY.title) },
-                        )
-                        FilterChip(
-                            selected = settings.emptyFolderScope == EmptyFolderScope.ALL,
-                            onClick = { vm.setEmptyFolderScope(EmptyFolderScope.ALL) },
-                            label = { Text(EmptyFolderScope.ALL.title) },
-                        )
-                    }
-                    Spacer(Modifier.height(6.dp))
-                    Text("默认仅扫描根目录空文件夹，更安全快速", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                }
-            }
-            // 扫描后直接清理
-            item {
-                SettingCard("扫描后直接清理", "扫描完成自动清理选中项，无需手动点击") {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text("启用", modifier = Modifier.weight(1f), style = MaterialTheme.typography.bodyLarge)
-                        Switch(checked = settings.scanThenClean, onCheckedChange = { vm.setScanThenClean(it) })
-                    }
-                    if (settings.scanThenClean) {
-                        Spacer(Modifier.height(6.dp))
-                        Text("⚠️ 开启后扫描完成将立即清理，请确认回收站已开启以防误删", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+                        ScreenOrientation.entries.forEach { orient ->
+                            FilterChip(
+                                selected = settings.screenOrientation == orient,
+                                onClick = { vm.setScreenOrientation(orient) },
+                                label = { Text(orient.title) },
+                            )
+                        }
                     }
                 }
             }
-            // APK 整理模式
+            // 归纳模式
             item {
-                SettingCard("APK 整理模式", "整理时复制（保留原文件）或移动（删除原文件）") {
+                SettingCard("归纳方式", "归纳时移动或复制原 APK 文件") {
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         ApkOrganizeMode.entries.forEach { mode ->
                             FilterChip(
@@ -148,57 +121,20 @@ fun SettingsScreen() {
                     Text(settings.apkOrganizeMode.desc, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
             }
-            // 主题模式
-            item {
-                SettingCard("主题模式", "切换日间/夜间/跟随系统主题") {
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        ThemeMode.entries.forEach { mode ->
-                            FilterChip(
-                                selected = settings.themeMode == mode,
-                                onClick = { vm.setThemeMode(mode) },
-                                label = { Text(mode.title) },
-                            )
-                        }
-                    }
-                    Spacer(Modifier.height(6.dp))
-                    Text(settings.themeMode.desc, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                }
-            }
-            // 屏幕方向
-            item {
-                SettingCard("屏幕方向", "手动切换横屏/竖屏，适合无重力感应的车机/平板设备") {
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        ScreenOrientation.entries.forEach { orient ->
-                            FilterChip(
-                                selected = settings.screenOrientation == orient,
-                                onClick = { vm.setScreenOrientation(orient) },
-                                label = { Text(orient.title) },
-                            )
-                        }
-                    }
-                    Spacer(Modifier.height(6.dp))
-                    Text(settings.screenOrientation.desc, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                }
-            }
-            // 说明
-            item {
-                Card(shape = RoundedCornerShape(20.dp), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant), modifier = Modifier.fillMaxWidth()) {
-                    Column(modifier = Modifier.padding(18.dp)) {
-                        Text("提示", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-                        Spacer(Modifier.height(8.dp))
-                        Text("· 所有设置即时生效并自动保存", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        Text("· 回收站文件存于 /storage/emulated/0/.JingCunTrash/", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        Text("· APK 整理目录为 /storage/emulated/0/apk整理/", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    }
-                }
-            }
+            // 关于
+            item { AboutCard(versionName = vm.currentVersionName()) }
         }
     }
 }
 
 @Composable
 private fun SettingCard(title: String, subtitle: String, content: @Composable () -> Unit) {
-    Card(shape = RoundedCornerShape(20.dp), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface), elevation = CardDefaults.cardElevation(defaultElevation = 1.dp), modifier = Modifier.fillMaxWidth()) {
+    Card(
+        shape = RoundedCornerShape(20.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        elevation = CardDefaults.cardElevation(defaultElevation = 1.dp),
+        modifier = Modifier.fillMaxWidth(),
+    ) {
         Column(modifier = Modifier.padding(18.dp)) {
             Text(title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
             Spacer(Modifier.height(4.dp))
@@ -209,15 +145,47 @@ private fun SettingCard(title: String, subtitle: String, content: @Composable ()
     }
 }
 
+/** 关于卡片：应用信息与保存路径说明 */
+@Composable
+private fun AboutCard(versionName: String) {
+    Card(
+        shape = RoundedCornerShape(20.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        elevation = CardDefaults.cardElevation(defaultElevation = 1.dp),
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Column(modifier = Modifier.padding(18.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Surface(shape = CircleShape, color = MaterialTheme.colorScheme.primary, modifier = Modifier.size(44.dp)) {
+                    Box(contentAlignment = Alignment.Center) {
+                        Text("A", color = MaterialTheme.colorScheme.onPrimary, fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleLarge)
+                    }
+                }
+                Spacer(Modifier.width(12.dp))
+                Column {
+                    Text("APK归纳", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                    Text("版本 v$versionName", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            }
+            Spacer(Modifier.height(12.dp))
+            Text(
+                "文件保存位置：\n· 归纳目录 /storage/emulated/0/APK归纳/\n· 提取目录 /storage/emulated/0/APK归纳/提取/",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+    }
+}
+
 /**
  * OTA 检查更新卡片：显示当前版本号 + 「检查更新」按钮 + 状态文案。
  * 当检测到新版本时，直接在卡片内显示更新日志和下载/安装按钮。
  * 详细的更新弹窗（更新说明/下载进度/安装）由 AppRoot 中的 UpdateDialog 全局展示。
  */
 @Composable
-private fun UpdateCheckCard(vm: CleanerViewModel, state: CleanerViewModel.UpdateUiState) {
+private fun UpdateCheckCard(vm: ApkViewModel, state: ApkViewModel.UpdateUiState) {
     val currentVer = vm.currentVersionName().ifBlank { "未知" }
-    val checking = state.phase == CleanerViewModel.UpdatePhase.CHECKING
+    val checking = state.phase == ApkViewModel.UpdatePhase.CHECKING
     Card(
         shape = RoundedCornerShape(20.dp),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
@@ -243,7 +211,7 @@ private fun UpdateCheckCard(vm: CleanerViewModel, state: CleanerViewModel.Update
             Spacer(Modifier.height(14.dp))
 
             when (state.phase) {
-                CleanerViewModel.UpdatePhase.CHECKING -> {
+                ApkViewModel.UpdatePhase.CHECKING -> {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         CircularProgressIndicator(
                             modifier = Modifier.size(16.dp), strokeWidth = 2.dp,
@@ -254,9 +222,8 @@ private fun UpdateCheckCard(vm: CleanerViewModel, state: CleanerViewModel.Update
                     }
                 }
 
-                CleanerViewModel.UpdatePhase.AVAILABLE -> {
+                ApkViewModel.UpdatePhase.AVAILABLE -> {
                     val info = state.info
-                    // 发现新版本：显示版本号 + 更新日志 + 下载按钮
                     Text("发现新版本 v${info?.versionName ?: ""}",
                         style = MaterialTheme.typography.titleMedium,
                         fontWeight = FontWeight.Bold,
@@ -304,8 +271,7 @@ private fun UpdateCheckCard(vm: CleanerViewModel, state: CleanerViewModel.Update
                     }
                 }
 
-                CleanerViewModel.UpdatePhase.DOWNLOADING -> {
-                    // 下载中：显示进度条
+                ApkViewModel.UpdatePhase.DOWNLOADING -> {
                     Text("正在下载 v${state.info?.versionName ?: ""}…",
                         style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold)
                     Spacer(Modifier.height(8.dp))
@@ -326,8 +292,7 @@ private fun UpdateCheckCard(vm: CleanerViewModel, state: CleanerViewModel.Update
                     ) { Text("取消下载") }
                 }
 
-                CleanerViewModel.UpdatePhase.DOWNLOADED -> {
-                    // 下载完成：显示安装按钮
+                ApkViewModel.UpdatePhase.DOWNLOADED -> {
                     Text("下载完成",
                         style = MaterialTheme.typography.titleMedium,
                         fontWeight = FontWeight.Bold,
@@ -336,34 +301,29 @@ private fun UpdateCheckCard(vm: CleanerViewModel, state: CleanerViewModel.Update
                     Text("新版本已准备好，点击安装", style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant)
                     Spacer(Modifier.height(12.dp))
-                    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                        Button(
-                            onClick = { vm.installUpdate() },
-                            shape = RoundedCornerShape(14.dp),
-                            modifier = Modifier.weight(1f).height(46.dp),
-                        ) {
-                            Icon(Icons.Filled.InstallMobile, contentDescription = null, modifier = Modifier.size(20.dp))
-                            Spacer(Modifier.size(6.dp))
-                            Text("立即安装", fontWeight = FontWeight.Bold)
-                        }
+                    Button(
+                        onClick = { vm.installUpdate() },
+                        shape = RoundedCornerShape(14.dp),
+                        modifier = Modifier.fillMaxWidth().height(46.dp),
+                    ) {
+                        Icon(Icons.Filled.InstallMobile, contentDescription = null, modifier = Modifier.size(20.dp))
+                        Spacer(Modifier.size(6.dp))
+                        Text("立即安装", fontWeight = FontWeight.Bold)
                     }
                 }
 
-                CleanerViewModel.UpdatePhase.ERROR -> {
+                ApkViewModel.UpdatePhase.ERROR -> {
                     Text(statusText(state),
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.error)
                     Spacer(Modifier.height(10.dp))
-                    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                        Button(
-                            onClick = { vm.retryCheckUpdate() },
-                            shape = RoundedCornerShape(14.dp),
-                        ) { Text("重试") }
-                    }
+                    Button(
+                        onClick = { vm.retryCheckUpdate() },
+                        shape = RoundedCornerShape(14.dp),
+                    ) { Text("重试") }
                 }
 
                 else -> {
-                    // IDLE：显示检查更新按钮
                     Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
                         OutlinedButton(
                             onClick = { vm.checkForUpdate(silent = false) },
@@ -389,22 +349,22 @@ private fun UpdateCheckCard(vm: CleanerViewModel, state: CleanerViewModel.Update
 }
 
 @Composable
-private fun statusColor(state: CleanerViewModel.UpdateUiState) = when (state.phase) {
-    CleanerViewModel.UpdatePhase.AVAILABLE, CleanerViewModel.UpdatePhase.DOWNLOADED ->
+private fun statusColor(state: ApkViewModel.UpdateUiState) = when (state.phase) {
+    ApkViewModel.UpdatePhase.AVAILABLE, ApkViewModel.UpdatePhase.DOWNLOADED ->
         MaterialTheme.colorScheme.primary
-    CleanerViewModel.UpdatePhase.DOWNLOADING -> MaterialTheme.colorScheme.tertiary
-    CleanerViewModel.UpdatePhase.ERROR -> MaterialTheme.colorScheme.error
+    ApkViewModel.UpdatePhase.DOWNLOADING -> MaterialTheme.colorScheme.tertiary
+    ApkViewModel.UpdatePhase.ERROR -> MaterialTheme.colorScheme.error
     else -> MaterialTheme.colorScheme.onSurfaceVariant
 }
 
-private fun statusText(state: CleanerViewModel.UpdateUiState): String = when (state.phase) {
-    CleanerViewModel.UpdatePhase.IDLE -> if (state.manual) state.message.ifBlank { "已是最新版本" } else "点击检查 GitHub 最新版本"
-    CleanerViewModel.UpdatePhase.CHECKING -> "正在检查…"
-    CleanerViewModel.UpdatePhase.AVAILABLE -> "发现新版本 v${state.info?.versionName ?: ""}"
-    CleanerViewModel.UpdatePhase.DOWNLOADING -> {
+private fun statusText(state: ApkViewModel.UpdateUiState): String = when (state.phase) {
+    ApkViewModel.UpdatePhase.IDLE -> if (state.manual) state.message.ifBlank { "已是最新版本" } else "点击检查 GitHub 最新版本"
+    ApkViewModel.UpdatePhase.CHECKING -> "正在检查…"
+    ApkViewModel.UpdatePhase.AVAILABLE -> "发现新版本 v${state.info?.versionName ?: ""}"
+    ApkViewModel.UpdatePhase.DOWNLOADING -> {
         val p = (state.percent * 100).toInt()
         "下载中 $p%（${formatBytes(state.downloadedBytes)} / ${formatBytes(state.totalBytes)}）"
     }
-    CleanerViewModel.UpdatePhase.DOWNLOADED -> "下载完成，点击安装"
-    CleanerViewModel.UpdatePhase.ERROR -> state.message.ifBlank { "检查失败" }
+    ApkViewModel.UpdatePhase.DOWNLOADED -> "下载完成，点击安装"
+    ApkViewModel.UpdatePhase.ERROR -> state.message.ifBlank { "检查失败" }
 }

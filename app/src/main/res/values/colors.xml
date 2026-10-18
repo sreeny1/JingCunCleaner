@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <color name="jingcun_green">#FF1B8738</color>
-    <color name="jingcun_green_dark">#FF0F5E27</color>
-    <color name="ic_launcher_background">#FF1B8738</color>
+    <color name="jingcun_blue">#FF1565C0</color>
+    <color name="jingcun_blue_dark">#FF0D3C74</color>
+    <color name="ic_launcher_background">#FF1565C0</color>
 </resources>

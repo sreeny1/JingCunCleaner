@@ -13,7 +13,7 @@ android {
         minSdk = 31
         targetSdk = 36
         versionCode = 10
-        versionName = "2.7.1"
+        versionName = "3.0"
     }
 
     signingConfigs {
@@ -47,6 +47,8 @@ android {
 
     buildFeatures {
         compose = true
+        // Shizuku 用户服务需要自定义 AIDL 接口
+        aidl = true
     }
 
     packaging {
@@ -72,5 +74,8 @@ dependencies {
     implementation(libs.androidx.datastore.preferences)
     implementation(libs.androidx.material3.adaptive.navigation.suite)
     implementation(libs.androidx.material3.windowsize)
+    // Shizuku：ADB 权限提取通道（GitHub: RikkaApps/Shizuku）
+    implementation(libs.shizuku.api)
+    implementation(libs.shizuku.provider)
     debugImplementation(libs.androidx.ui.tooling)
 }
