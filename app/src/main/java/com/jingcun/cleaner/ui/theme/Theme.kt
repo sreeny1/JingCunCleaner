@@ -1,7 +1,10 @@
 package com.jingcun.cleaner.ui.theme
 
 import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.MotionScheme
+import androidx.compose.material3.MaterialExpressiveTheme
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
@@ -61,6 +64,7 @@ private val DarkColors = darkColorScheme(
     outlineVariant = BlueOutlineVariantDark,
 )
 
+@OptIn(ExperimentalMaterial3ExpressiveApi::class)
 @Composable
 fun JingCunTheme(
     themeMode: ThemeMode = ThemeMode.SYSTEM,
@@ -73,7 +77,9 @@ fun JingCunTheme(
         ThemeMode.SYSTEM -> isSystemInDarkTheme()
     }
     val colorScheme = if (darkTheme) DarkColors else LightColors
-    MaterialTheme(
+    // M3 Expressive：全局弹性动画曲线（MotionScheme.expressive），组件动画更具生命力
+    MaterialExpressiveTheme(
+        motionScheme = MotionScheme.expressive(),
         colorScheme = colorScheme,
         typography = Typography,
         content = content,

@@ -25,6 +25,22 @@ import java.util.Locale
  */
 class ApkOrganizer(private val context: Context) {
 
+    /**
+     * 安装包完整性判定（仅对元信息解析失败的文件做 zip 结构校验）：
+     * APK 本质是 zip；下载中断/传输出错的文件缺失尾部 central directory，
+     * ZipFile 打开即抛异常，可据此确定性区分「损坏」与「非 APK」。
+     */
+    enum class ApkIntegrity {
+        /** 解析正常 */
+        OK,
+        /** zip 目录区缺失：典型为下载中断/传输出错，大概率无法安装 */
+        INCOMPLETE,
+        /** zip 结构正常但缺 AndroidManifest.xml：XAPK/APKS 容器或改名压缩包 */
+        NON_APK,
+        /** zip 与清单均正常但元信息无法解析（少见） */
+        UNKNOWN,
+    }
+
     data class ApkInfo(
         val sourceFile: File,
         val appName: String,
@@ -36,6 +52,10 @@ class ApkOrganizer(private val context: Context) {
         val targetName: String,
         /** 能否解析出应用名/版本号；XAPK/APKS 容器与损坏包为 false，归纳时保留原文件名 */
         val recognized: Boolean = true,
+        /** 来源存储卷显示名（本机存储 / USB 存储设备 / SD 卡…），供 UI 按卷筛选 */
+        val volumeName: String = "",
+        /** 完整性判定（仅解析失败的文件会带非 OK 值） */
+        val integrity: ApkIntegrity = ApkIntegrity.OK,
     )
 
     data class OrganizeResult(
@@ -94,7 +114,11 @@ class ApkOrganizer(private val context: Context) {
         val visited = HashSet<String>()
         val targetPath = runCatching { targetDir.canonicalPath }.getOrDefault(targetDir.absolutePath)
         var scanned = 0
+        // 卷根 → 显示名（本机存储 / USB 存储设备 / SD 卡 / 外置存储 N）
+        val volumeNames = resolveVolumeNames()
         for (volume in storageVolumes()) {
+            val volumeLabel = volumeNames[runCatching { volume.canonicalPath }.getOrDefault(volume.absolutePath)]
+                ?: "外置存储"
             val stack = ArrayDeque<File>()
             stack.addLast(volume)
             while (stack.isNotEmpty()) {
@@ -115,7 +139,7 @@ class ApkOrganizer(private val context: Context) {
                         scanned++
                         onProgress(Progress(scanned, -1, c.name))
                         // 解析失败（XAPK/APKS 容器、损坏包）不再静默丢弃，保留原名进列表
-                        result.add(parseApk(c) ?: unrecognizedInfo(c))
+                        result.add(parseApk(c, volumeLabel) ?: unrecognizedInfo(c, volumeLabel))
                     }
                 }
             }
@@ -123,8 +147,36 @@ class ApkOrganizer(private val context: Context) {
         result
     }
 
+    /**
+     * 存储卷根路径 → 显示名。
+     * 优先级：主存储固定「本机存储」；StorageManager.getStorageVolumes() 的系统描述名
+     * （如「USB 存储设备」「SD 卡」）覆盖；getExternalFilesDirs 反推的其余卷兜底「外置存储 N」。
+     */
+    private fun resolveVolumeNames(): Map<String, String> {
+        val map = LinkedHashMap<String, String>()
+        val primary = runCatching { Environment.getExternalStorageDirectory().canonicalPath }.getOrNull()
+        if (primary != null) map[primary] = "本机存储"
+        var extIndex = 1
+        for (root in storageVolumes()) {
+            val key = runCatching { root.canonicalPath }.getOrDefault(root.absolutePath)
+            if (key == primary || map.containsKey(key)) continue
+            map[key] = "外置存储 ${extIndex++}"
+        }
+        runCatching {
+            val sm = context.getSystemService(Context.STORAGE_SERVICE) as android.os.storage.StorageManager
+            for (v in sm.storageVolumes) {
+                val dir = runCatching { v.directory?.canonicalPath }.getOrNull() ?: continue
+                if (map.containsKey(dir)) {
+                    val desc = runCatching { v.getDescription(context) }.getOrNull()
+                    if (!desc.isNullOrBlank()) map[dir] = desc
+                }
+            }
+        }
+        return map
+    }
+
     /** 解析单个 APK 元信息（应用名、版本号、图标备用信息） */
-    private fun parseApk(file: File): ApkInfo? = runCatching {
+    private fun parseApk(file: File, volumeName: String): ApkInfo? = runCatching {
         val pm = context.packageManager
         val pi = pm.getPackageArchiveInfo(file.absolutePath, PackageManager.GET_META_DATA) ?: return null
         val appInfo = pi.applicationInfo ?: return null
@@ -145,11 +197,12 @@ class ApkOrganizer(private val context: Context) {
             versionCode = versionCode,
             size = runCatching { file.length() }.getOrDefault(0L),
             targetName = "${sanitizeFileName("$appName$verPart")}.apk",
+            volumeName = volumeName,
         )
     }.getOrNull()
 
-    /** 无法解析元信息的安装包（XAPK/APKS 容器、损坏包）：保留原文件名归纳 */
-    private fun unrecognizedInfo(file: File): ApkInfo = ApkInfo(
+    /** 无法解析元信息的安装包（XAPK/APKS 容器、损坏包）：保留原文件名归纳，并标注完整性判定 */
+    private fun unrecognizedInfo(file: File, volumeName: String): ApkInfo = ApkInfo(
         sourceFile = file,
         appName = file.nameWithoutExtension,
         packageName = "",
@@ -158,7 +211,17 @@ class ApkOrganizer(private val context: Context) {
         size = runCatching { file.length() }.getOrDefault(0L),
         targetName = sanitizeFileName(file.name),
         recognized = false,
+        volumeName = volumeName,
+        integrity = classifyIntegrity(file),
     )
+
+    /** zip 结构校验：损坏包（目录区缺失）→ INCOMPLETE；无清单 → NON_APK；其余 → UNKNOWN */
+    private fun classifyIntegrity(file: File): ApkIntegrity = runCatching {
+        java.util.zip.ZipFile(file).use { zip ->
+            if (zip.getEntry("AndroidManifest.xml") != null) ApkIntegrity.UNKNOWN
+            else ApkIntegrity.NON_APK
+        }
+    }.getOrElse { ApkIntegrity.INCOMPLETE }
 
     /**
      * 归纳一个 APK 到目标目录，命名为「应用名+版本号.apk」。
@@ -278,17 +341,22 @@ class ApkOrganizer(private val context: Context) {
                         .put("vn", a.versionName)
                         .put("vc", a.versionCode)
                         .put("t", a.targetName)
-                        .put("r", a.recognized),
+                        .put("r", a.recognized)
+                        .put("vol", a.volumeName)
+                        .put("ig", a.integrity.name),
                 )
             }
             cacheFile.writeText(arr.toString())
         }
     }
 
-    /** 读取扫描缓存；逐条校验文件仍存在且大小一致，全部失效时返回 null */
+    /** 读取扫描缓存；旧版本缓存（无卷名字段）直接失效；逐条校验文件仍存在且大小一致，全部失效时返回 null */
     suspend fun loadScanCache(): List<ApkInfo>? = withContext(Dispatchers.IO) {
         runCatching {
             val arr = org.json.JSONArray(cacheFile.readText())
+            // v3.2 之前缓存的条目没有卷名字段，直接失效重扫
+            val first = arr.optJSONObject(0)
+            if (first != null && !first.has("vol")) return@runCatching null
             val out = mutableListOf<ApkInfo>()
             for (i in 0 until arr.length()) {
                 val o = arr.optJSONObject(i) ?: continue
@@ -305,6 +373,10 @@ class ApkOrganizer(private val context: Context) {
                         size = size,
                         targetName = o.optString("t"),
                         recognized = o.optBoolean("r", true),
+                        volumeName = o.optString("vol"),
+                        integrity = runCatching {
+                            ApkIntegrity.valueOf(o.optString("ig", "OK"))
+                        }.getOrDefault(ApkIntegrity.OK),
                     ),
                 )
             }

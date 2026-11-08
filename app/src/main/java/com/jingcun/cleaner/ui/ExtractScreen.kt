@@ -34,11 +34,14 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
+import androidx.compose.material3.LoadingIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.material3.LinearWavyProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
@@ -75,7 +78,7 @@ import com.jingcun.cleaner.util.formatBytes
  * 需要 ADB 权限（Shizuku）或 Root；均无权限时提示用户暂时无法提取，
  * 但应用列表始终可见。
  */
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalMaterial3ExpressiveApi::class)
 @Composable
 fun ExtractScreen() {
     val vm: ApkViewModel = viewModel()
@@ -231,7 +234,8 @@ fun ExtractScreen() {
                             modifier = Modifier.fillMaxWidth().padding(32.dp),
                             horizontalAlignment = Alignment.CenterHorizontally,
                         ) {
-                            CircularProgressIndicator(color = MaterialTheme.colorScheme.primary, strokeWidth = 4.dp)
+                            // M3 Expressive 加载动画
+                            LoadingIndicator(color = MaterialTheme.colorScheme.primary)
                             Spacer(Modifier.height(12.dp))
                             Text("正在读取已安装应用…", style = MaterialTheme.typography.bodyMedium)
                         }
@@ -402,9 +406,10 @@ private fun BatchProgressCard(done: Int, total: Int, current: String, onCancel: 
                 }
             }
             Spacer(Modifier.height(8.dp))
-            LinearProgressIndicator(
+            // M3 Expressive 波浪进度条
+            LinearWavyProgressIndicator(
                 progress = { if (total > 0) done.toFloat() / total else 0f },
-                modifier = Modifier.fillMaxWidth().height(6.dp).clip(RoundedCornerShape(3.dp)),
+                modifier = Modifier.fillMaxWidth(),
             )
         }
     }

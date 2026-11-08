@@ -1,9 +1,11 @@
 package com.jingcun.cleaner.ui
 
+import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animateFloatAsState
-import androidx.compose.animation.core.tween
+import androidx.compose.animation.core.spring
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInHorizontally
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -19,11 +21,13 @@ import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Smartphone
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
 import androidx.compose.material3.Icon
-import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.LinearWavyProgressIndicator
+import androidx.compose.material3.LoadingIndicator
 import androidx.compose.material3.adaptive.navigationsuite.ExperimentalMaterial3AdaptiveNavigationSuiteApi
 import androidx.compose.material3.adaptive.navigationsuite.NavigationSuiteScaffold
 import androidx.compose.material3.adaptive.navigationsuite.NavigationSuiteType
@@ -56,7 +60,10 @@ private val topDestinations = listOf(TopDest.Organize, TopDest.Extract, TopDest.
 /** 是否宽屏（平板/车机）→ 侧边 Rail 导航；窄屏用底部 Bar */
 fun WindowSizeClass.isWide(): Boolean = widthSizeClass != WindowWidthSizeClass.Compact
 
-@OptIn(ExperimentalMaterial3AdaptiveNavigationSuiteApi::class)
+@OptIn(
+    ExperimentalMaterial3AdaptiveNavigationSuiteApi::class,
+    ExperimentalMaterial3ExpressiveApi::class,
+)
 @Composable
 fun AppRoot(windowSizeClass: WindowSizeClass) {
     val navController = rememberNavController()
@@ -93,8 +100,14 @@ fun AppRoot(windowSizeClass: WindowSizeClass) {
             navController = navController,
             startDestination = TopDest.Organize.route,
             modifier = Modifier.fillMaxSize(),
-            enterTransition = { fadeIn(tween(180)) },
-            exitTransition = { fadeOut(tween(120)) },
+            // M3 Expressive 风格页面转场：弹性滑动 + 淡入
+            enterTransition = {
+                slideInHorizontally(
+                    animationSpec = spring(stiffness = Spring.StiffnessMediumLow),
+                    initialOffsetX = { it / 8 },
+                ) + fadeIn(spring(stiffness = Spring.StiffnessMedium))
+            },
+            exitTransition = { fadeOut(spring(stiffness = Spring.StiffnessMedium)) },
         ) {
             composable(TopDest.Organize.route) { OrganizeScreen() }
             composable(TopDest.Extract.route) { ExtractScreen() }
@@ -157,15 +170,20 @@ private fun UpdateDialog(vm: ApkViewModel, state: ApkViewModel.UpdateUiState) {
         }
 
         ApkViewModel.UpdatePhase.DOWNLOADING -> {
-            val animPercent by animateFloatAsState(state.percent, animationSpec = tween(200), label = "ota-dl")
+            val animPercent by animateFloatAsState(
+                targetValue = state.percent,
+                animationSpec = spring(stiffness = Spring.StiffnessMediumLow),
+                label = "ota-dl",
+            )
             AlertDialog(
                 onDismissRequest = { vm.dismissUpdate() },
                 title = { Text("正在下载新版本", fontWeight = FontWeight.Bold) },
                 text = {
                     Column {
-                        LinearProgressIndicator(
+                        // M3 Expressive 波浪进度条
+                        LinearWavyProgressIndicator(
                             progress = { animPercent.coerceIn(0f, 1f) },
-                            modifier = Modifier.fillMaxWidth().height(8.dp).clip(RoundedCornerShape(4.dp)),
+                            modifier = Modifier.fillMaxWidth(),
                         )
                         Spacer(Modifier.height(10.dp))
                         Text(

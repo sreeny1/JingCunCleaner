@@ -39,8 +39,10 @@ data class OrganizeUiState(
     val successCount: Int = 0,
     val message: String = "",
     val hasStoragePermission: Boolean = false,
-    /** 归纳前预览勾选的 APK 路径（默认全选） */
+    /** 归纳前预览勾选的 APK 路径（默认全选；完整性异常的文件默认不勾） */
     val selectedPaths: Set<String> = emptySet(),
+    /** 存储卷筛选（null=全部；切换后勾选自动重置为当前卷） */
+    val selectedVolume: String? = null,
 )
 
 // ==================== 应用提取状态 ====================
@@ -195,7 +197,11 @@ class ApkViewModel(app: Application) : AndroidViewModel(app) {
                         apks = cached,
                         totalCount = cached.size,
                         hasStoragePermission = current.hasStoragePermission,
-                        selectedPaths = cached.map { it.sourceFile.absolutePath }.toSet(),
+                        // 默认勾选完整性正常的文件，损坏/非标准包默认不勾
+                        selectedPaths = cached
+                            .filter { it.integrity == ApkOrganizer.ApkIntegrity.OK }
+                            .map { it.sourceFile.absolutePath }
+                            .toSet(),
                     )
                     return@launch
                 }
@@ -222,7 +228,11 @@ class ApkViewModel(app: Application) : AndroidViewModel(app) {
                     phase = if (list.isEmpty()) OrganizePhase.IDLE else OrganizePhase.READY,
                     apks = list,
                     totalCount = list.size,
-                    selectedPaths = list.map { it.sourceFile.absolutePath }.toSet(),
+                    // 默认勾选完整性正常的文件，损坏/非标准包默认不勾
+                    selectedPaths = list
+                        .filter { it.integrity == ApkOrganizer.ApkIntegrity.OK }
+                        .map { it.sourceFile.absolutePath }
+                        .toSet(),
                     message = if (list.isEmpty()) "未找到 APK 文件" else "",
                     currentName = "",
                 )
@@ -245,22 +255,44 @@ class ApkViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    /** 全选 / 全不选（归纳前预览） */
-    fun selectAll(selected: Boolean) {
+    /**
+     * 切换存储卷筛选（null=全部）。
+     * 切换后勾选自动重置为当前筛选范围（完整性异常的文件默认不勾，用户可手动勾上）。
+     */
+    fun setVolumeFilter(volume: String?) {
         _organizeState.update { s ->
+            val filtered = s.apks.filter { volume == null || it.volumeName == volume }
             s.copy(
-                selectedPaths = if (selected) {
-                    s.apks.map { it.sourceFile.absolutePath }.toSet()
-                } else emptySet(),
+                selectedVolume = volume,
+                selectedPaths = filtered
+                    .filter { it.integrity == ApkOrganizer.ApkIntegrity.OK }
+                    .map { it.sourceFile.absolutePath }
+                    .toSet(),
             )
         }
     }
 
-    /** 一键归纳：将勾选的 APK 移动/复制到「APK归纳」目录并重命名 */
+    /** 全选 / 全不选（作用于当前卷筛选范围） */
+    fun selectAll(selected: Boolean) {
+        _organizeState.update { s ->
+            val filtered = s.apks
+                .filter { s.selectedVolume == null || it.volumeName == s.selectedVolume }
+                .map { it.sourceFile.absolutePath }
+                .toSet()
+            s.copy(
+                selectedPaths = if (selected) s.selectedPaths + filtered else s.selectedPaths - filtered,
+            )
+        }
+    }
+
+    /** 一键归纳：将勾选且属于当前卷筛选的 APK 移动/复制到「APK归纳」目录并重命名 */
     fun organizeAllApks() {
         val s = _organizeState.value
         if (s.phase != OrganizePhase.READY || s.apks.isEmpty()) return
-        val targets = s.apks.filter { it.sourceFile.absolutePath in s.selectedPaths }
+        val targets = s.apks.filter {
+            it.sourceFile.absolutePath in s.selectedPaths &&
+                (s.selectedVolume == null || it.volumeName == s.selectedVolume)
+        }
         if (targets.isEmpty()) return
         _organizeState.value = s.copy(
             phase = OrganizePhase.ORGANIZING, progress = 0f, doneCount = 0, totalCount = targets.size,

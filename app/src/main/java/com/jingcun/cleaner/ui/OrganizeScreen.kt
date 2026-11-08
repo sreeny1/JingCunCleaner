@@ -3,8 +3,13 @@ package com.jingcun.cleaner.ui
 import android.content.Intent
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animateFloatAsState
-import androidx.compose.animation.core.tween
+import androidx.compose.animation.core.spring
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.scaleIn
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -19,6 +24,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -32,15 +38,18 @@ import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Security
+import androidx.compose.material.icons.filled.Usb
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Checkbox
-import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.material3.LoadingIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
@@ -77,7 +86,7 @@ import com.jingcun.cleaner.util.formatBytes
  * 一键归纳到 /storage/emulated/0/APK归纳/ 目录。
  * 进入页面且已有存储权限时自动扫描一次。
  */
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalMaterial3ExpressiveApi::class)
 @Composable
 fun OrganizeScreen() {
     val vm: ApkViewModel = viewModel()
@@ -175,16 +184,24 @@ fun OrganizeScreen() {
                 }
                 OrganizePhase.SCANNING -> item { ScanningCard(state) }
                 OrganizePhase.READY -> {
+                    // 存储卷筛选：全部 / 本机存储 / USB 存储设备 / SD 卡（车机多磁盘场景）
+                    if (state.apks.size > 1) {
+                        item(key = "volumes") { VolumeFilterRow(state, onSelect = vm::setVolumeFilter) }
+                    }
                     item { SummaryCard(state, onSelectAll = { vm.selectAll(it) }) }
                     item {
                         BigButton(
-                            text = "一键归纳（已选 ${state.selectedPaths.size}/${state.apks.size}）",
+                            text = "一键归纳（已选 ${selectedCountInFilter(state)}/${filteredApks(state).size}）",
                             icon = Icons.Filled.PlayArrow,
-                            enabled = state.selectedPaths.isNotEmpty(),
+                            enabled = selectedCountInFilter(state) > 0,
                             onClick = vm::organizeAllApks,
                         )
                     }
-                    items(state.apks, key = { it.sourceFile.absolutePath }) { apk ->
+                    items(
+                        filteredApks(state),
+                        key = { it.sourceFile.absolutePath },
+                        contentType = { "apk" },
+                    ) { apk ->
                         ApkItemCard(
                             apk = apk,
                             checked = apk.sourceFile.absolutePath in state.selectedPaths,
@@ -252,6 +269,15 @@ fun OrganizeScreen() {
     }
 }
 
+/** 当前卷筛选下的 APK 列表（selectedVolume=null 返回全部） */
+private fun filteredApks(state: OrganizeUiState): List<ApkOrganizer.ApkInfo> =
+    if (state.selectedVolume == null) state.apks
+    else state.apks.filter { it.volumeName == state.selectedVolume }
+
+/** 当前卷筛选下已勾选的文件数 */
+private fun selectedCountInFilter(state: OrganizeUiState): Int =
+    filteredApks(state).count { it.sourceFile.absolutePath in state.selectedPaths }
+
 /** 顶部主操作卡 */
 @Composable
 private fun HeroCard(
@@ -316,6 +342,46 @@ private fun BigButton(text: String, icon: androidx.compose.ui.graphics.vector.Im
     }
 }
 
+/** 存储卷筛选行：全部 / 本机存储 / USB 存储设备 / SD 卡（含各自文件数） */
+@Composable
+private fun VolumeFilterRow(state: OrganizeUiState, onSelect: (String?) -> Unit) {
+    // 以原始 volumeName 为键（空串也可能出现），显示名仅在 label 兜底「未知位置」
+    val volumes = state.apks
+        .groupingBy { it.volumeName }
+        .eachCount()
+        .entries
+        .toList()
+    LazyRow(
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        item {
+            FilterChip(
+                selected = state.selectedVolume == null,
+                onClick = { onSelect(null) },
+                label = { Text("全部 · ${state.apks.size}") },
+            )
+        }
+        items(volumes) { entry ->
+            FilterChip(
+                selected = state.selectedVolume == entry.key,
+                onClick = { onSelect(entry.key) },
+                label = { Text("${entry.key.ifEmpty { "未知位置" }} · ${entry.value}") },
+                leadingIcon = {
+                    Icon(
+                        when (entry.key) {
+                            "本机存储" -> Icons.Filled.Inventory2
+                            else -> Icons.Filled.Usb
+                        },
+                        contentDescription = null,
+                        modifier = Modifier.size(16.dp),
+                    )
+                },
+            )
+        }
+    }
+}
+
 /** 存储权限提示卡 */
 @Composable
 private fun PermissionCard(onGrant: () -> Unit) {
@@ -347,7 +413,7 @@ private fun PermissionCard(onGrant: () -> Unit) {
     }
 }
 
-/** 扫描中进度卡 */
+/** 扫描中进度卡（M3 Expressive 加载动画） */
 @Composable
 private fun ScanningCard(state: OrganizeUiState) {
     Card(
@@ -359,28 +425,35 @@ private fun ScanningCard(state: OrganizeUiState) {
             modifier = Modifier.fillMaxWidth().padding(24.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
-            CircularProgressIndicator(color = MaterialTheme.colorScheme.primary, strokeWidth = 4.dp)
+            LoadingIndicator(color = MaterialTheme.colorScheme.primary)
             Spacer(Modifier.height(16.dp))
             Text("正在扫描 APK…", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
             Spacer(Modifier.height(8.dp))
-            Text(
-                state.currentName.ifEmpty { "准备中…" },
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
+            AnimatedContent(
+                targetState = state.currentName.ifEmpty { "准备中…" },
+                label = "scanName",
+            ) { name ->
+                Text(
+                    name,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
         }
     }
 }
 
-/** 扫描结果摘要卡（含已选计数与全选/全不选） */
+/** 扫描结果摘要卡（计数随卷筛选联动，数字变化带动画） */
 @Composable
 private fun SummaryCard(state: OrganizeUiState, onSelectAll: (Boolean) -> Unit) {
-    val selectedSize = state.apks
+    val filtered = filteredApks(state)
+    val selectedCount = selectedCountInFilter(state)
+    val selectedSize = filtered
         .filter { it.sourceFile.absolutePath in state.selectedPaths }
         .sumOf { it.size }
-    val allSelected = state.selectedPaths.size == state.apks.size && state.apks.isNotEmpty()
+    val allSelected = filtered.isNotEmpty() && selectedCount == filtered.size
     Card(
         shape = RoundedCornerShape(20.dp),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer),
@@ -394,14 +467,19 @@ private fun SummaryCard(state: OrganizeUiState, onSelectAll: (Boolean) -> Unit) 
             }
             Spacer(Modifier.width(14.dp))
             Column(modifier = Modifier.weight(1f)) {
+                AnimatedContent(
+                    targetState = selectedCount to filtered.size,
+                    label = "summaryCount",
+                ) { (sel, total) ->
+                    Text(
+                        "共 $total 个 APK · 已选 $sel",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.onPrimaryContainer,
+                    )
+                }
                 Text(
-                    "发现 ${state.apks.size} 个 APK · 已选 ${state.selectedPaths.size}",
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.Bold,
-                    color = MaterialTheme.colorScheme.onPrimaryContainer,
-                )
-                Text(
-                    "已选共 ${formatBytes(selectedSize)} / 全部 ${formatBytes(state.apks.sumOf { it.size })}",
+                    "已选共 ${formatBytes(selectedSize)} / 全部 ${formatBytes(filtered.sumOf { it.size })}",
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onPrimaryContainer,
                 )
@@ -446,18 +524,37 @@ private fun ApkItemCard(
                 )
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     if (!apk.recognized) {
-                        Surface(shape = RoundedCornerShape(6.dp), color = MaterialTheme.colorScheme.tertiaryContainer) {
+                        // 完整性徽标：红色=疑似损坏（下载中断），黄色=非标准包/元信息异常
+                        val isError = apk.integrity == ApkOrganizer.ApkIntegrity.INCOMPLETE
+                        val label = when (apk.integrity) {
+                            ApkOrganizer.ApkIntegrity.INCOMPLETE -> "不完整·可能无法安装"
+                            ApkOrganizer.ApkIntegrity.NON_APK -> "非标准安装包"
+                            else -> "元信息无法识别"
+                        }
+                        Surface(
+                            shape = RoundedCornerShape(6.dp),
+                            color = if (isError) MaterialTheme.colorScheme.errorContainer
+                            else MaterialTheme.colorScheme.tertiaryContainer,
+                        ) {
                             Text(
-                                "未识别",
+                                label,
                                 style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.onTertiaryContainer,
+                                color = if (isError) MaterialTheme.colorScheme.onErrorContainer
+                                else MaterialTheme.colorScheme.onTertiaryContainer,
                                 modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
                             )
                         }
                         Spacer(Modifier.width(6.dp))
                     }
                     Text(
-                        apk.sourceFile.absolutePath.substringAfter("/storage/emulated/0/").ifEmpty { apk.sourceFile.absolutePath },
+                        buildString {
+                            if (apk.volumeName.isNotBlank()) append("${apk.volumeName} · ")
+                            append(
+                                apk.sourceFile.absolutePath
+                                    .substringAfter("/storage/emulated/0/")
+                                    .ifEmpty { apk.sourceFile.absolutePath },
+                            )
+                        },
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         maxLines = 1,
@@ -475,10 +572,14 @@ private fun ApkItemCard(
     }
 }
 
-/** 归纳中进度卡 */
+/** 归纳中进度卡（弹性动画跟随进度） */
 @Composable
 private fun OrganizingCard(state: OrganizeUiState) {
-    val animProgress by animateFloatAsState(state.progress.coerceIn(0f, 1f), animationSpec = tween(300), label = "org")
+    val animProgress by animateFloatAsState(
+        targetValue = state.progress.coerceIn(0f, 1f),
+        animationSpec = spring(stiffness = Spring.StiffnessLow),
+        label = "org",
+    )
     Card(
         shape = RoundedCornerShape(24.dp),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
@@ -495,11 +596,16 @@ private fun OrganizingCard(state: OrganizeUiState) {
                 modifier = Modifier.fillMaxWidth().height(8.dp).clip(RoundedCornerShape(4.dp)),
             )
             Spacer(Modifier.height(10.dp))
-            Text(
-                "${state.doneCount} / ${state.totalCount}",
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
+            AnimatedContent(
+                targetState = state.doneCount to state.totalCount,
+                label = "orgCount",
+            ) { (done, total) ->
+                Text(
+                    "$done / $total",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
         }
     }
 }
@@ -516,6 +622,9 @@ private fun DoneCard(
     onAgain: () -> Unit,
 ) {
     val allSuccess = successCount == total
+    // 完成卡弹入动画（弹性缩放 + 淡入）
+    val shown = androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf(false) }
+    androidx.compose.runtime.LaunchedEffect(Unit) { shown.value = true }
     Card(
         shape = RoundedCornerShape(24.dp),
         colors = CardDefaults.cardColors(
@@ -524,10 +633,17 @@ private fun DoneCard(
         ),
         modifier = Modifier.fillMaxWidth(),
     ) {
-        Column(
-            modifier = Modifier.fillMaxWidth().padding(28.dp),
-            horizontalAlignment = Alignment.CenterHorizontally,
+        androidx.compose.animation.AnimatedVisibility(
+            visible = shown.value,
+            enter = scaleIn(
+                initialScale = 0.9f,
+                animationSpec = spring(dampingRatio = Spring.DampingRatioMediumBouncy),
+            ) + fadeIn(),
         ) {
+            Column(
+                modifier = Modifier.fillMaxWidth().padding(28.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+            ) {
             Icon(
                 if (allSuccess) Icons.Filled.CheckCircle else Icons.Filled.ErrorOutline,
                 contentDescription = null,
@@ -574,6 +690,7 @@ private fun DoneCard(
                 Icon(Icons.Filled.Refresh, contentDescription = null, modifier = Modifier.size(18.dp))
                 Spacer(Modifier.width(6.dp))
                 Text("再扫描一次", fontWeight = FontWeight.Bold)
+            }
             }
         }
     }

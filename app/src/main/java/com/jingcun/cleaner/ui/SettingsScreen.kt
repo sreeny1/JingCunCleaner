@@ -26,10 +26,13 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
+import androidx.compose.material3.LoadingIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.material3.LinearWavyProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
@@ -54,7 +57,7 @@ import com.jingcun.cleaner.util.formatBytes
 /**
  * 设置页（简约）：外观（主题模式）、屏幕方向、归纳设置、在线更新、关于。
  */
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalMaterial3ExpressiveApi::class)
 @Composable
 fun SettingsScreen() {
     val vm: ApkViewModel = viewModel()
@@ -222,9 +225,10 @@ private fun UpdateCheckCard(vm: ApkViewModel, state: ApkViewModel.UpdateUiState)
             when (state.phase) {
                 ApkViewModel.UpdatePhase.CHECKING -> {
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        CircularProgressIndicator(
-                            modifier = Modifier.size(16.dp), strokeWidth = 2.dp,
+                        // M3 Expressive 加载动画
+                        LoadingIndicator(
                             color = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(28.dp),
                         )
                         Spacer(Modifier.size(8.dp))
                         Text("正在检查更新…", style = MaterialTheme.typography.bodyMedium)
@@ -284,9 +288,10 @@ private fun UpdateCheckCard(vm: ApkViewModel, state: ApkViewModel.UpdateUiState)
                     Text("正在下载 v${state.info?.versionName ?: ""}…",
                         style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold)
                     Spacer(Modifier.height(8.dp))
-                    LinearProgressIndicator(
+                    // M3 Expressive 波浪进度条
+                    LinearWavyProgressIndicator(
                         progress = { state.percent.coerceIn(0f, 1f) },
-                        modifier = Modifier.fillMaxWidth().height(8.dp).clip(RoundedCornerShape(4.dp)),
+                        modifier = Modifier.fillMaxWidth(),
                     )
                     Spacer(Modifier.height(6.dp))
                     Text(

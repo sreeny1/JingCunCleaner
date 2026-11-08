@@ -1,7 +1,30 @@
 # 更新日志
 
-本项目版本号遵循 `主版本.次版本`（如 `3.1`），versionCode 单调递增。
-每次发布在 GitHub Releases 创建对应 tag（如 `v3.1`）并上传 APK。
+本项目版本号遵循 `主版本.次版本`（如 `3.2`），versionCode 单调递增。
+每次发布在 GitHub Releases 创建对应 tag（如 `v3.2`）并上传 APK。
+
+## [v3.2] - 2026-11-08
+
+### 新增
+- **按磁盘（存储卷）整理**：扫描时记录每个 APK 的来源卷（本机存储 / USB 存储设备 / SD 卡），
+  归纳页新增卷筛选行（含各卷文件数），可单独整理某个磁盘中的全部 APK；
+  卷名优先取系统描述（`StorageManager.getStorageVolumes()`），车机 ROM 信息不全时兜底「外置存储 N」
+- **损坏 APK 检测提醒**（零额外权限）：对元信息解析失败的文件做 zip 结构校验——
+  - 🔴「不完整·可能无法安装」：zip 目录区缺失，典型为下载中断/传输出错
+  - 🟡「非标准安装包」：zip 正常但缺 AndroidManifest.xml（XAPK/APKS 容器、改名压缩包）
+  - 🟡「元信息无法识别」：结构与清单正常但无法解析
+  - 完整性异常的文件默认不勾选，用户可手动勾选归纳
+- **M3 Expressive 全面升级**（material3 1.5.0-alpha18，为保持 compileSdk 36 兼容所选的最高可用版本）：
+  - 主题切换 `MaterialExpressiveTheme` + `MotionScheme.expressive()`（全局弹性动画曲线），蓝白配色不变
+  - 扫描/提取/检查更新加载动画换 `LoadingIndicator`
+  - OTA 与批量提取进度条换 Expressive 波浪进度条（`LinearWavyProgressIndicator`）
+  - 页面切换弹性滑动转场、摘要数字 `AnimatedContent` 切换、归纳进度弹性跟随、完成卡弹入动画
+
+### 优化
+- 扫描结果缓存携带卷与完整性信息，旧版缓存自动失效重扫
+
+### 其他
+- versionCode=12，versionName=3.2
 
 ## [v3.1] - 2026-11-08
 
