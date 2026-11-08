@@ -45,6 +45,7 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
@@ -82,22 +83,27 @@ fun ExtractScreen() {
     val shizukuStatus by vm.shizukuStatus.collectAsState()
     var filter by rememberSaveable { mutableStateOf("all") }
     var query by rememberSaveable { mutableStateOf("") }
+    var showBatchConfirm by rememberSaveable { mutableStateOf(false) }
+    var showShizukuGuide by rememberSaveable { mutableStateOf(false) }
 
     // 进入页面自动加载已安装应用列表
     LaunchedEffect(Unit) {
         if (vm.shouldAutoLoadApps()) vm.loadInstalledApps()
     }
 
-    val filtered = state.apps.filter { app ->
-        val passFilter = when (filter) {
-            "user" -> !app.isSystemApp
-            "system" -> app.isSystemApp
-            else -> true
+    val filtered = androidx.compose.runtime.remember(state.apps, filter, query) {
+        state.apps.filter { app ->
+            val passFilter = when (filter) {
+                "user" -> !app.isSystemApp
+                "system" -> app.isSystemApp
+                "can" -> app.canDirectExtract
+                else -> true
+            }
+            val passQuery = query.isBlank() ||
+                app.appName.contains(query, ignoreCase = true) ||
+                app.packageName.contains(query, ignoreCase = true)
+            passFilter && passQuery
         }
-        val passQuery = query.isBlank() ||
-            app.appName.contains(query, ignoreCase = true) ||
-            app.packageName.contains(query, ignoreCase = true)
-        passFilter && passQuery
     }
 
     Scaffold(
@@ -121,7 +127,7 @@ fun ExtractScreen() {
             verticalArrangement = Arrangement.spacedBy(10.dp),
         ) {
             // ADB 权限状态卡
-            item { ShizukuStatusCard(shizukuStatus, onRequest = vm::requestShizukuPermission) }
+            item { ShizukuStatusCard(shizukuStatus, onRequest = vm::requestShizukuPermission, onGuide = { showShizukuGuide = true }) }
 
             // 搜索框
             item {
@@ -143,7 +149,7 @@ fun ExtractScreen() {
                 )
             }
 
-            // 过滤 chips + 批量提取
+            // 过滤 chips（含「可提取」：当前权限下无需 ADB/Root 即可提取的应用）
             item {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
@@ -165,10 +171,15 @@ fun ExtractScreen() {
                         onClick = { filter = "system" },
                         label = { Text("系统应用") },
                     )
+                    FilterChip(
+                        selected = filter == "can",
+                        onClick = { filter = "can" },
+                        label = { Text("可提取") },
+                    )
                 }
             }
 
-            // 批量提取按钮/进度
+            // 批量提取按钮/进度（跟随当前筛选列表，提取前弹确认框）
             item {
                 if (state.batchRunning) {
                     BatchProgressCard(
@@ -178,24 +189,36 @@ fun ExtractScreen() {
                         onCancel = vm::cancelBatchExtract,
                     )
                 } else {
-                    val userApps = state.apps.count { !it.isSystemApp && !vm.isSelfApp(it) }
-                    Button(
-                        onClick = vm::extractAllUserApps,
-                        enabled = userApps > 0,
-                        shape = RoundedCornerShape(14.dp),
-                        modifier = Modifier.fillMaxWidth().height(48.dp),
-                    ) {
-                        Icon(Icons.Filled.Download, contentDescription = null)
-                        Spacer(Modifier.width(8.dp))
-                        Text("提取全部用户应用（$userApps）", fontWeight = FontWeight.Bold)
-                    }
-                    if (state.batchMessage.isNotEmpty()) {
-                        Spacer(Modifier.height(6.dp))
-                        Text(
-                            state.batchMessage,
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.primary,
-                        )
+                    val batchTargets = filtered.count { !vm.isSelfApp(it) }
+                    Column {
+                        Button(
+                            onClick = { showBatchConfirm = true },
+                            enabled = batchTargets > 0,
+                            shape = RoundedCornerShape(14.dp),
+                            modifier = Modifier.fillMaxWidth().height(48.dp),
+                        ) {
+                            Icon(Icons.Filled.Download, contentDescription = null)
+                            Spacer(Modifier.width(8.dp))
+                            Text("提取当前列表（$batchTargets）", fontWeight = FontWeight.Bold)
+                        }
+                        if (state.batchMessage.isNotEmpty()) {
+                            Spacer(Modifier.height(6.dp))
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Text(
+                                    state.batchMessage,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.primary,
+                                    modifier = Modifier.weight(1f, fill = false),
+                                )
+                                val failed = vm.failedExtractCount()
+                                if (failed > 0) {
+                                    Spacer(Modifier.width(10.dp))
+                                    TextButton(onClick = vm::retryFailedExtracts) {
+                                        Text("重试失败项（$failed）", fontWeight = FontWeight.SemiBold)
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -230,17 +253,89 @@ fun ExtractScreen() {
                         app = app,
                         extracting = app.packageName in state.extracting,
                         result = state.results[app.packageName],
+                        batchRunning = state.batchRunning,
                         onExtract = { vm.extractApp(app) },
+                        onClearResult = { vm.clearExtractResult(app.packageName) },
                     )
                 }
             }
         }
     }
+
+    // 批量提取确认框：避免误触一次性提取大量应用
+    if (showBatchConfirm) {
+        androidx.compose.material3.AlertDialog(
+            onDismissRequest = { showBatchConfirm = false },
+            title = { Text("批量提取确认", fontWeight = FontWeight.Bold) },
+            text = {
+                Text(
+                    "将提取当前列表中 ${filtered.count { !vm.isSelfApp(it) }} 个应用的安装包到「APK归纳/提取」目录，" +
+                        "期间请保持应用在前台。确认开始？",
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = { showBatchConfirm = false; vm.extractBatch(filtered) }) {
+                    Text("开始提取", fontWeight = FontWeight.Bold)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showBatchConfirm = false }) { Text("取消") }
+            },
+        )
+    }
+
+    // Shizuku（ADB 权限）开启教程
+    if (showShizukuGuide) {
+        androidx.compose.material3.AlertDialog(
+            onDismissRequest = { showShizukuGuide = false },
+            title = { Text("如何开启 ADB 权限", fontWeight = FontWeight.Bold) },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(
+                        "用户应用的安装包受系统保护，开启 ADB 权限（通过开源工具 Shizuku）后即可提取。" +
+                            "系统应用无需此操作。开启步骤：",
+                        style = MaterialTheme.typography.bodyMedium,
+                    )
+                    Text(
+                        "方式一：手机 / 平板（Android 11 及以上）",
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.Bold,
+                    )
+                    Text(
+                        "1. 安装 Shizuku（GitHub 搜索 RikkaApps/Shizuku）\n" +
+                            "2. 打开 Shizuku →「通过无线调试启动」按提示配对\n" +
+                            "3. 回到本应用，等待状态卡变为「已就绪」后点「授权」",
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                    Text(
+                        "方式二：车机 / 电视（需一台电脑）",
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.Bold,
+                    )
+                    Text(
+                        "1. 车机开启开发者选项（比亚迪等车机通常在「设置 → 关于 → 版本号」连点 7 次）\n" +
+                            "2. 打开「USB 调试」/「网络 ADB 调试」\n" +
+                            "3. 电脑执行：adb shell sh /sdcard/Android/data/moe.shizuku.privileged.api/start.sh\n" +
+                            "4. 回到本应用点「授权」",
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                    Text(
+                        "不开启也没有关系：系统应用可正常提取，用户应用会明确标注「需ADB」。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { showShizukuGuide = false }) { Text("我知道了") }
+            },
+        )
+    }
 }
 
 /** ADB（Shizuku）权限状态卡 */
 @Composable
-private fun ShizukuStatusCard(status: ShizukuStatus, onRequest: () -> Unit) {
+private fun ShizukuStatusCard(status: ShizukuStatus, onRequest: () -> Unit, onGuide: () -> Unit) {
     val (container, content) = when (status) {
         ShizukuStatus.GRANTED ->
             MaterialTheme.colorScheme.primaryContainer to MaterialTheme.colorScheme.onPrimaryContainer
@@ -280,6 +375,8 @@ private fun ShizukuStatusCard(status: ShizukuStatus, onRequest: () -> Unit) {
             }
             if (status == ShizukuStatus.NEED_PERMISSION) {
                 Button(onClick = onRequest, shape = RoundedCornerShape(12.dp)) { Text("授权") }
+            } else if (status == ShizukuStatus.NOT_RUNNING) {
+                TextButton(onClick = onGuide) { Text("开启教程", fontWeight = FontWeight.SemiBold) }
             }
         }
     }
@@ -319,9 +416,23 @@ private fun AppItemCard(
     app: AppExtractor.InstalledApp,
     extracting: Boolean,
     result: Pair<Boolean, String>?,
+    batchRunning: Boolean,
     onExtract: () -> Unit,
+    onClearResult: () -> Unit,
 ) {
-    val iconBitmap = androidx.compose.runtime.remember(app.icon) { drawableToImageBitmap(app.icon) }
+    val density = androidx.compose.ui.platform.LocalDensity.current
+    // 图标按显示尺寸×屏幕密度渲染，避免高分屏（车机 1080p+）上发糊
+    val iconSizePx = with(density) { 42.dp.toPx() }.toInt()
+    val iconBitmap = androidx.compose.runtime.remember(app.icon, iconSizePx) {
+        drawableToImageBitmap(app.icon, iconSizePx)
+    }
+    // 成功提示 6 秒后自动消失；失败提示保留
+    LaunchedEffect(app.packageName, result?.first) {
+        if (result?.first == true) {
+            kotlinx.coroutines.delay(6000)
+            onClearResult()
+        }
+    }
     Card(
         shape = RoundedCornerShape(14.dp),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
@@ -365,6 +476,17 @@ private fun AppItemCard(
                                 )
                             }
                         }
+                        if (!app.canDirectExtract) {
+                            Spacer(Modifier.width(6.dp))
+                            Surface(shape = RoundedCornerShape(5.dp), color = MaterialTheme.colorScheme.errorContainer) {
+                                Text(
+                                    "需ADB",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onErrorContainer,
+                                    modifier = Modifier.padding(horizontal = 5.dp, vertical = 1.dp),
+                                )
+                            }
+                        }
                     }
                     Text(
                         "v${app.versionName.ifBlank { "未知" }} · ${formatBytes(app.sizeBytes)}",
@@ -377,7 +499,8 @@ private fun AppItemCard(
                 if (extracting) {
                     CircularProgressIndicator(modifier = Modifier.size(24.dp), strokeWidth = 2.5.dp, color = MaterialTheme.colorScheme.primary)
                 } else {
-                    IconButton(onClick = onExtract) {
+                    // 批量提取进行中禁用单项按钮，防止与批量任务并发写同一文件
+                    IconButton(onClick = onExtract, enabled = !batchRunning) {
                         Icon(
                             if (result?.first == true) Icons.Filled.DownloadDone else Icons.Filled.Download,
                             contentDescription = "提取",

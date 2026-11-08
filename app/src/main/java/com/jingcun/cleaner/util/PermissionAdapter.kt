@@ -15,8 +15,13 @@ import android.provider.Settings
  * - 标准系统（普通手机/平板）：走 MANAGE_EXTERNAL_STORAGE 授权页
  * - 车机多媒体系统（授权页被精简）：自动降级到 READ/WRITE_EXTERNAL_STORAGE 运行时权限
  *
- * 降级检测原理：用 PackageManager.resolveActivity() 检测目标授权 Activity 是否存在。
- * 车机精简了系统设置页时，resolveActivity 返回 null，触发降级路径。
+ * v3.1 比亚迪 DiLink 适配（依据社区固件审计证据）：
+ * 比亚迪车机的设置页是自定义 VehicleSettings，会为数十个标准 android.settings.* action
+ * 注册"诱饵"Activity——startActivity 成功打开但只显示"多媒体系统不支持此操作"，
+ * resolveActivity() 对诱饵返回非 null，无法据此判断页面真实存在。
+ * 因此授权不再只发一个 Intent，而是提供「授权选项链」：
+ * 标准全盘授权页 → 应用详情页（比亚迪固件审计确认 InstalledAppDetailsActivity 可达，
+ * 从"权限→文件和媒体"中开启）→ 运行时权限。上一项无效时用户可换下一项。
  *
  * 参考：Android 官方文档 Environment.isExternalStorageManager() 判断全盘权限
  */
@@ -30,6 +35,32 @@ class PermissionAdapter(private val context: Context) {
         LEGACY,
         /** 未授权 */
         NONE,
+    }
+
+    /** 一个可选的授权入口（授权选项链中的一环） */
+    data class GrantOption(
+        val id: String,
+        val title: String,
+        val desc: String,
+        val intent: Intent,
+    )
+
+    companion object {
+        /** 比亚迪/DiLink 设备检测：Build 信息中含 BYD/DiLink 标识 */
+        fun isBydDevice(): Boolean {
+            val marks = listOf(
+                Build.MANUFACTURER, Build.BRAND, Build.PRODUCT,
+                Build.DISPLAY, Build.FINGERPRINT, Build.MODEL,
+            ).joinToString(" ").lowercase()
+            return "byd" in marks || "dilink" in marks
+        }
+
+        /** 从 Build 信息解析 DiLink 版本号（如 "5.1"），解析失败返回 null */
+        fun diLinkVersion(): String? {
+            val source = (Build.DISPLAY + " " + Build.FINGERPRINT)
+            val m = Regex("DiLink\\s*([0-9]+(?:\\.[0-9]+)?)", RegexOption.IGNORE_CASE).find(source)
+            return m?.groupValues?.get(1)
+        }
     }
 
     /** 当前存储权限状态 */
@@ -46,24 +77,49 @@ class PermissionAdapter(private val context: Context) {
         return if (read && write) StorageMode.LEGACY else StorageMode.NONE
     }
 
-    /** 是否支持标准全盘授权页（车机精简后返回 false） */
-    fun isFullStorageSettingsAvailable(): Boolean {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) return false
-        val intent = Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION).apply {
-            data = Uri.parse("package:${context.packageName}")
+    /**
+     * 全盘存储授权选项链（按优先级排列）。
+     * 注意：比亚迪诱饵页会导致 resolveActivity 误判，故仅做基础可用性过滤，
+     * 由 UI 在"返回后仍未授权"时引导用户尝试下一项。
+     */
+    fun grantOptions(): List<GrantOption> {
+        val options = mutableListOf<GrantOption>()
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            // 1. 标准"所有文件访问权限"授权页（定向到本应用）
+            options += GrantOption(
+                id = "all_files",
+                title = "所有文件访问权限",
+                desc = "标准授权页。部分车机会显示「不支持此操作」，此时请尝试下一项",
+                intent = Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION).apply {
+                    data = Uri.parse("package:${context.packageName}")
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                },
+            )
+            // 2. 全部应用的全盘授权列表页（部分 ROM 保留）
+            options += GrantOption(
+                id = "all_files_list",
+                title = "全盘授权列表",
+                desc = "在列表中找到「APK归纳」并允许",
+                intent = Intent(Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION).apply {
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                },
+            )
+            // 3. 应用详情页（比亚迪实测可达；从 权限→文件和媒体 开启）
+            options += GrantOption(
+                id = "app_details",
+                title = "应用详情页",
+                desc = "车机推荐。进入后点「权限」→「文件和媒体」→ 允许管理所有文件",
+                intent = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
+                    data = Uri.parse("package:${context.packageName}")
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                },
+            )
         }
-        return intent.resolveActivity(context.packageManager) != null
+        return options
     }
 
-    /** 创建全盘存储授权 Intent（不可用时返回 null） */
-    fun createFullStorageIntent(): Intent? {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) return null
-        if (!isFullStorageSettingsAvailable()) return null
-        return Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION).apply {
-            data = Uri.parse("package:${context.packageName}")
-            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-        }
-    }
+    /** 首选授权 Intent（grantOptions 第一项；Android 11 以下为 null 走运行时权限） */
+    fun createFullStorageIntent(): Intent? = grantOptions().firstOrNull()?.intent
 
     /** 运行时存储权限是否已授予（降级模式用） */
     fun hasLegacyStoragePermission(): Boolean {

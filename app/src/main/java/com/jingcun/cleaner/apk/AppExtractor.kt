@@ -46,6 +46,9 @@ class AppExtractor(private val context: Context) {
         val icon: Drawable?,
         /** 提取后的目标文件名（应用名+版本号.apk） */
         val targetName: String,
+        /** 当前权限下能否直接提取（系统分区全局可读，或 ROM 放行 /data/app）；
+         *  大部分车机/手机无 ADB 与 Root，此字段决定列表徽标、筛选与批量范围 */
+        val canDirectExtract: Boolean,
     )
 
     /** 单个提取结果 */
@@ -97,6 +100,9 @@ class AppExtractor(private val context: Context) {
                 val versionName = pi.versionName ?: ""
                 val versionCode = PackageInfoCompat.getLongVersionCode(pi)
                 val verPart = versionName.ifBlank { "v$versionCode" }
+                // 预判当前权限能否直接提取：系统分区可读，或该 ROM 放行 /data/app。
+                // 无 ADB/无 Root 的车机与手机上，此判定让 UI 提前给出诚实预期。
+                val direct = isSystemPath(sourceDir) || canReadDirectly(sourceDir)
                 InstalledApp(
                     appName = appName,
                     packageName = pi.packageName ?: "",
@@ -107,6 +113,7 @@ class AppExtractor(private val context: Context) {
                     isSystemApp = isSystem,
                     icon = runCatching { ai.loadIcon(pm) }.getOrNull(),
                     targetName = "${sanitizeFileName("$appName$verPart")}.apk",
+                    canDirectExtract = direct,
                 )
             }.getOrNull()
         }.sortedBy { it.appName.lowercase() }
@@ -124,6 +131,11 @@ class AppExtractor(private val context: Context) {
     suspend fun extract(app: InstalledApp): ExtractResult = withContext(Dispatchers.IO) {
         val dir = extractDir
         runCatching { dir.mkdirs() }
+        // 重复提取跳过：目录已有同名同大小文件则不重复复制（防 (1)(2) 副本堆积）
+        val existing = File(dir, app.targetName)
+        if (existing.exists() && app.sizeBytes > 0 && existing.length() == app.sizeBytes) {
+            return@withContext ExtractResult(app, existing.absolutePath, true, "已提取过（跳过重复）")
+        }
         val target = uniqueTarget(dir, app.targetName)
 
         // 1) 直接读取（系统应用 / 宽松 ROM / 已有全盘权限）
@@ -247,18 +259,29 @@ class AppExtractor(private val context: Context) {
 
     // ---------- Root ----------
 
-    /** 设备是否有可用 root（su 命令可执行） */
+    /** su 进程等待上限：部分 ROM 弹 root 授权框会无限挂起，必须超时退出 */
+    private val rootTimeoutMs = 5_000L
+
+    /** 设备是否有可用 root（su 命令可执行，5 秒超时防授权框挂起） */
     fun hasRoot(): Boolean = runCatching {
         val process = Runtime.getRuntime().exec("su")
-        process.outputStream.use { it.write("exit\n".toByteArray()) }
-        process.waitFor() == 0
+        try {
+            process.outputStream.use { it.write("exit\n".toByteArray()) }
+            process.waitFor(rootTimeoutMs, TimeUnit.MILLISECONDS)
+        } finally {
+            if (process.isAlive) process.destroy()
+        }
     }.getOrDefault(false)
 
-    /** 通过 root 执行命令 */
+    /** 通过 root 执行命令（5 秒超时防授权框挂起） */
     private fun runRootShell(cmd: String): Boolean = runCatching {
         val process = Runtime.getRuntime().exec("su")
-        process.outputStream.use { it.write("$cmd\nexit\n".toByteArray()) }
-        process.waitFor() == 0
+        try {
+            process.outputStream.use { it.write("$cmd\nexit\n".toByteArray()) }
+            process.waitFor(rootTimeoutMs, TimeUnit.MILLISECONDS)
+        } finally {
+            if (process.isAlive) process.destroy()
+        }
     }.getOrDefault(false)
 
     // ---------- 工具 ----------

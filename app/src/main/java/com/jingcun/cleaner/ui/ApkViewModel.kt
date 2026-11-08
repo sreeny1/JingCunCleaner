@@ -16,6 +16,7 @@ import com.jingcun.cleaner.util.PermissionAdapter
 import com.jingcun.cleaner.update.UpdateChecker
 import com.jingcun.cleaner.update.UpdateInstaller
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -38,6 +39,8 @@ data class OrganizeUiState(
     val successCount: Int = 0,
     val message: String = "",
     val hasStoragePermission: Boolean = false,
+    /** 归纳前预览勾选的 APK 路径（默认全选） */
+    val selectedPaths: Set<String> = emptySet(),
 )
 
 // ==================== 应用提取状态 ====================
@@ -174,28 +177,52 @@ class ApkViewModel(app: Application) : AndroidViewModel(app) {
 
     // ---- APK 归纳 ----
 
-    /** 扫描所有存储卷中的 APK 文件 */
-    fun scanApks() {
+    /** 扫描所有存储卷中的 APK 文件（force=false 优先用缓存秒出列表，force=true 强制全盘重扫） */
+    fun scanApks(force: Boolean = false) {
         val current = _organizeState.value
         if (current.phase == OrganizePhase.SCANNING || current.phase == OrganizePhase.ORGANIZING) return
         autoScanRequested = true
-        _organizeState.value = OrganizeUiState(
-            phase = OrganizePhase.SCANNING,
-            hasStoragePermission = current.hasStoragePermission,
-            currentName = "正在扫描 APK…",
-        )
-        organizeJob?.cancel()
+        val old = organizeJob
         organizeJob = viewModelScope.launch {
-            try {
-                val list = apkOrganizer.scanAll { p ->
-                    _organizeState.value = _organizeState.value.copy(
-                        currentName = "已扫描 ${p.scanned} 个 · ${p.currentName}",
+            // 等待上一个扫描/归纳任务真正退出，避免新旧任务短暂并发
+            old?.cancelAndJoin()
+            // 缓存优先：上次结果仍有效（文件存在且大小一致）则直接展示，免全盘重扫
+            if (!force) {
+                val cached = runCatching { apkOrganizer.loadScanCache() }.getOrNull()
+                if (cached != null) {
+                    _organizeState.value = OrganizeUiState(
+                        phase = OrganizePhase.READY,
+                        apks = cached,
+                        totalCount = cached.size,
+                        hasStoragePermission = current.hasStoragePermission,
+                        selectedPaths = cached.map { it.sourceFile.absolutePath }.toSet(),
                     )
+                    return@launch
                 }
+            }
+            _organizeState.value = OrganizeUiState(
+                phase = OrganizePhase.SCANNING,
+                hasStoragePermission = current.hasStoragePermission,
+                currentName = "正在扫描 APK…",
+            )
+            try {
+                var lastEmit = 0L
+                val list = apkOrganizer.scanAll { p ->
+                    // 节流：150ms 内合并进度回调，防低端车机 SoC 重组风暴
+                    val now = System.currentTimeMillis()
+                    if (now - lastEmit >= 150) {
+                        lastEmit = now
+                        _organizeState.value = _organizeState.value.copy(
+                            currentName = "已扫描 ${p.scanned} 个 · ${p.currentName}",
+                        )
+                    }
+                }
+                runCatching { apkOrganizer.saveScanCache(list) }
                 _organizeState.value = _organizeState.value.copy(
                     phase = if (list.isEmpty()) OrganizePhase.IDLE else OrganizePhase.READY,
                     apks = list,
                     totalCount = list.size,
+                    selectedPaths = list.map { it.sourceFile.absolutePath }.toSet(),
                     message = if (list.isEmpty()) "未找到 APK 文件" else "",
                     currentName = "",
                 )
@@ -210,22 +237,48 @@ class ApkViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    /** 一键归纳：将扫描到的 APK 移动/复制到「APK归纳」目录并重命名 */
+    /** 切换单个 APK 的勾选状态（归纳前预览） */
+    fun toggleSelect(path: String) {
+        _organizeState.update { s ->
+            val sel = if (path in s.selectedPaths) s.selectedPaths - path else s.selectedPaths + path
+            s.copy(selectedPaths = sel)
+        }
+    }
+
+    /** 全选 / 全不选（归纳前预览） */
+    fun selectAll(selected: Boolean) {
+        _organizeState.update { s ->
+            s.copy(
+                selectedPaths = if (selected) {
+                    s.apks.map { it.sourceFile.absolutePath }.toSet()
+                } else emptySet(),
+            )
+        }
+    }
+
+    /** 一键归纳：将勾选的 APK 移动/复制到「APK归纳」目录并重命名 */
     fun organizeAllApks() {
         val s = _organizeState.value
         if (s.phase != OrganizePhase.READY || s.apks.isEmpty()) return
-        _organizeState.value = s.copy(phase = OrganizePhase.ORGANIZING, progress = 0f, doneCount = 0)
-        organizeJob?.cancel()
+        val targets = s.apks.filter { it.sourceFile.absolutePath in s.selectedPaths }
+        if (targets.isEmpty()) return
+        _organizeState.value = s.copy(
+            phase = OrganizePhase.ORGANIZING, progress = 0f, doneCount = 0, totalCount = targets.size,
+        )
+        val old = organizeJob
         organizeJob = viewModelScope.launch {
+            old?.cancelAndJoin()
             try {
                 val mode = settings.value.apkOrganizeMode
-                val results = apkOrganizer.organizeAll(s.apks, mode) { done, total ->
+                val results = apkOrganizer.organizeAll(targets, mode) { done, total ->
                     _organizeState.value = _organizeState.value.copy(
                         progress = done.toFloat() / total.coerceAtLeast(1),
                         doneCount = done,
                         totalCount = total,
                     )
                 }
+                // 归纳后源文件已变更，扫描缓存失效
+                runCatching { apkOrganizer.clearScanCache() }
                 val ok = results.count { it.success }
                 _organizeState.value = _organizeState.value.copy(
                     phase = OrganizePhase.DONE,
@@ -300,18 +353,23 @@ class ApkViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    /** 批量提取：默认提取所有用户应用 */
-    fun extractAllUserApps() {
+    /** 批量提取给定列表（通常为当前筛选结果），UI 侧先弹确认框 */
+    fun extractBatch(apps: List<AppExtractor.InstalledApp>) {
         if (_extractState.value.batchRunning) return
-        val userApps = _extractState.value.apps.filter { !it.isSystemApp && !appExtractor.isSelf(it) }
-        if (userApps.isEmpty()) return
+        val targets = apps.filter { !appExtractor.isSelf(it) }
+        if (targets.isEmpty()) return
+        val batchPkgs = targets.map { it.packageName }.toSet()
         extractJob?.cancel()
         _extractState.value = _extractState.value.copy(
-            batchRunning = true, batchTotal = userApps.size, batchDone = 0, batchCurrent = "",
+            batchRunning = true,
+            batchTotal = targets.size,
+            batchDone = 0,
+            batchCurrent = "",
+            extracting = _extractState.value.extracting + batchPkgs,
         )
         extractJob = viewModelScope.launch {
             try {
-                val results = appExtractor.extractAll(userApps) { done, total, app ->
+                val results = appExtractor.extractAll(targets) { done, total, app ->
                     _extractState.value = _extractState.value.copy(
                         batchDone = done, batchTotal = total, batchCurrent = app.appName,
                     )
@@ -321,23 +379,36 @@ class ApkViewModel(app: Application) : AndroidViewModel(app) {
                 _extractState.update {
                     it.copy(
                         batchRunning = false,
+                        extracting = it.extracting - batchPkgs,
                         results = it.results + resultMap,
                         batchMessage = "批量提取完成：成功 $ok / 共 ${results.size}",
                     )
                 }
             } catch (e: kotlinx.coroutines.CancellationException) {
-                _extractState.update { it.copy(batchRunning = false) }
+                _extractState.update { it.copy(batchRunning = false, extracting = it.extracting - batchPkgs) }
                 throw e
             } catch (e: Throwable) {
                 _extractState.update {
                     it.copy(
                         batchRunning = false,
+                        extracting = it.extracting - batchPkgs,
                         batchMessage = "批量提取失败：${e.message ?: e.javaClass.simpleName}",
                     )
                 }
             }
         }
     }
+
+    /** 重试上次批量提取中失败的应用 */
+    fun retryFailedExtracts() {
+        val failedPkgs = _extractState.value.results.filterValues { !it.first }.keys
+        if (failedPkgs.isEmpty()) return
+        val apps = _extractState.value.apps.filter { it.packageName in failedPkgs }
+        if (apps.isNotEmpty()) extractBatch(apps)
+    }
+
+    /** 批量提取结果中失败的数量（>0 时显示重试入口） */
+    fun failedExtractCount(): Int = _extractState.value.results.count { !it.value.first }
 
     /** 取消批量提取 */
     fun cancelBatchExtract() {
@@ -353,6 +424,23 @@ class ApkViewModel(app: Application) : AndroidViewModel(app) {
     /** 目标目录路径（UI 展示用） */
     fun organizeTargetPath(): String = apkOrganizer.targetDir().absolutePath
     fun extractTargetPath(): String = appExtractor.extractDir.absolutePath
+
+    /** 存储权限授权选项链（比亚迪等车机上的多入口降级） */
+    fun storageGrantOptions(): List<com.jingcun.cleaner.util.PermissionAdapter.GrantOption> =
+        permissionAdapter.grantOptions()
+
+    /** 是否为比亚迪/DiLink 车机（关于页展示适配信息） */
+    fun isBydDevice(): Boolean = com.jingcun.cleaner.util.PermissionAdapter.isBydDevice()
+
+    /** DiLink 版本号（非比亚迪返回 null） */
+    fun diLinkVersion(): String? = com.jingcun.cleaner.util.PermissionAdapter.diLinkVersion()
+
+    /** 关于页设备备注（如「检测到比亚迪 DiLink 5.1 车机」；非比亚迪返回 null） */
+    fun deviceNote(): String? {
+        if (!isBydDevice()) return null
+        val v = diLinkVersion()
+        return if (v != null) "已适配比亚迪 DiLink $v 车机" else "已适配比亚迪车机"
+    }
 
     // ---- 设置 ----
     fun setApkOrganizeMode(v: ApkOrganizeMode) = viewModelScope.launch { settingsRepo.setApkOrganizeMode(v) }
@@ -431,7 +519,7 @@ class ApkViewModel(app: Application) : AndroidViewModel(app) {
         updateJob?.cancel()
         updateJob = viewModelScope.launch {
             try {
-                val file = updateInstaller.download(info.downloadUrl) { p ->
+                val file = updateInstaller.download(info.downloadUrl, info.digest) { p ->
                     _updateState.value = _updateState.value.copy(
                         downloadedBytes = p.downloaded, totalBytes = p.total
                     )

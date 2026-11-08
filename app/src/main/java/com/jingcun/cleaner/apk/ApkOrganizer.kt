@@ -34,6 +34,8 @@ class ApkOrganizer(private val context: Context) {
         val size: Long,
         /** 归纳后显示的文件名（应用名+版本号.apk），供 UI 预览 */
         val targetName: String,
+        /** 能否解析出应用名/版本号；XAPK/APKS 容器与损坏包为 false，归纳时保留原文件名 */
+        val recognized: Boolean = true,
     )
 
     data class OrganizeResult(
@@ -112,7 +114,8 @@ class ApkOrganizer(private val context: Context) {
                     } else if (c.extension.lowercase(Locale.ROOT) in APK_EXTS) {
                         scanned++
                         onProgress(Progress(scanned, -1, c.name))
-                        parseApk(c)?.let { result.add(it) }
+                        // 解析失败（XAPK/APKS 容器、损坏包）不再静默丢弃，保留原名进列表
+                        result.add(parseApk(c) ?: unrecognizedInfo(c))
                     }
                 }
             }
@@ -145,16 +148,39 @@ class ApkOrganizer(private val context: Context) {
         )
     }.getOrNull()
 
+    /** 无法解析元信息的安装包（XAPK/APKS 容器、损坏包）：保留原文件名归纳 */
+    private fun unrecognizedInfo(file: File): ApkInfo = ApkInfo(
+        sourceFile = file,
+        appName = file.nameWithoutExtension,
+        packageName = "",
+        versionName = "",
+        versionCode = 0L,
+        size = runCatching { file.length() }.getOrDefault(0L),
+        targetName = sanitizeFileName(file.name),
+        recognized = false,
+    )
+
     /**
      * 归纳一个 APK 到目标目录，命名为「应用名+版本号.apk」。
      *
      * 策略：
+     * - 目标目录已有同名同大小文件 → 判定为重复归纳，跳过（防 COPY 模式反复整理堆积 (1)(2) 副本）
      * - 同卷直接 renameTo（秒完成，零拷贝）；跨卷复制后删除
      * - MOVE 删除原文件失败视为整体失败并清理 target，防重复归纳产生副本
      * - 复制失败清理半成品 target，防磁盘泄漏
      */
     suspend fun organize(apk: ApkInfo, mode: ApkOrganizeMode): OrganizeResult = withContext(Dispatchers.IO) {
+        // 扫描与归纳之间存在时间差，源文件可能已被移动/删除
+        if (!apk.sourceFile.exists()) {
+            return@withContext OrganizeResult(
+                apk, apk.sourceFile.absolutePath, false,
+                "源文件已不存在（可能已被移动或删除）",
+            )
+        }
         runCatching { targetDir.mkdirs() }
+        findExistingSameSize(apk.targetName, apk.size)?.let {
+            return@withContext OrganizeResult(apk, it.absolutePath, true, "已归纳过（跳过重复）")
+        }
         var target = uniqueTarget(apk.targetName)
         // 先尝试同卷 rename（仅 MOVE 模式且源同卷时）
         var movedFast = false
@@ -191,7 +217,8 @@ class ApkOrganizer(private val context: Context) {
             reason = when {
                 ok && mode == ApkOrganizeMode.MOVE -> "已移动"
                 ok -> "已复制"
-                else -> "归纳失败（权限不足或磁盘已满）"
+                !apk.sourceFile.exists() -> "源文件已不存在"
+                else -> "归纳失败（权限不足或目标目录不可写）"
             },
         )
     }
@@ -223,6 +250,71 @@ class ApkOrganizer(private val context: Context) {
             n++
         }
         return target
+    }
+
+    /** 目标目录已存在同名且同大小的文件（重复归纳判定） */
+    private fun findExistingSameSize(name: String, size: Long): File? {
+        val f = File(targetDir, name)
+        return if (f.exists() && size > 0 && f.length() == size) f else null
+    }
+
+    // ---------- 扫描结果缓存（二次进入秒出列表，免全盘重扫） ----------
+
+    private val cacheFile: File
+        get() = File(context.cacheDir, "apk_scan_cache.json")
+
+    /** 保存扫描结果到缓存（json 数组，含路径/大小/元信息） */
+    fun saveScanCache(list: List<ApkInfo>) {
+        if (list.isEmpty()) return
+        runCatching {
+            val arr = org.json.JSONArray()
+            list.forEach { a ->
+                arr.put(
+                    org.json.JSONObject()
+                        .put("p", a.sourceFile.absolutePath)
+                        .put("s", a.size)
+                        .put("n", a.appName)
+                        .put("pkg", a.packageName)
+                        .put("vn", a.versionName)
+                        .put("vc", a.versionCode)
+                        .put("t", a.targetName)
+                        .put("r", a.recognized),
+                )
+            }
+            cacheFile.writeText(arr.toString())
+        }
+    }
+
+    /** 读取扫描缓存；逐条校验文件仍存在且大小一致，全部失效时返回 null */
+    suspend fun loadScanCache(): List<ApkInfo>? = withContext(Dispatchers.IO) {
+        runCatching {
+            val arr = org.json.JSONArray(cacheFile.readText())
+            val out = mutableListOf<ApkInfo>()
+            for (i in 0 until arr.length()) {
+                val o = arr.optJSONObject(i) ?: continue
+                val f = File(o.optString("p"))
+                val size = o.optLong("s", 0L)
+                if (!f.exists() || f.length() != size) continue
+                out.add(
+                    ApkInfo(
+                        sourceFile = f,
+                        appName = o.optString("n"),
+                        packageName = o.optString("pkg"),
+                        versionName = o.optString("vn"),
+                        versionCode = o.optLong("vc", 0L),
+                        size = size,
+                        targetName = o.optString("t"),
+                        recognized = o.optBoolean("r", true),
+                    ),
+                )
+            }
+            out.ifEmpty { null }
+        }.getOrNull()
+    }
+
+    /** 清除扫描缓存（归纳完成后源文件已变更，缓存失效） */
+    fun clearScanCache() {
+        runCatching { cacheFile.delete() }
     }
 
     /** 判断两个文件是否位于同一存储卷（同卷可 rename 快速移动） */

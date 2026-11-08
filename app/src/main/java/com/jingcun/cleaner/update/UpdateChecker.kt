@@ -29,6 +29,7 @@ class UpdateChecker(private val context: Context) {
         val downloadUrl: String,      // APK 下载地址
         val fileSize: Long,           // APK 文件大小（字节）
         val htmlUrl: String,          // Release 页面地址
+        val digest: String = "",      // GitHub 提供的 sha256（形如 "sha256:xxx"，用于下载后校验）
     )
 
     /** 检查结果封装：区分"无新版本"和"请求失败" */
@@ -121,12 +122,14 @@ class UpdateChecker(private val context: Context) {
         val assets = obj.optJSONArray("assets") ?: return CheckResult.Failed("Release 无 APK 资产")
         var apkUrl = ""
         var apkSize = 0L
+        var apkDigest = ""
         for (i in 0 until assets.length()) {
             val asset = assets.optJSONObject(i) ?: continue
             val name = asset.optString("name", "")
             if (name.endsWith(".apk", ignoreCase = true)) {
                 apkUrl = asset.optString("browser_download_url", "")
                 apkSize = asset.optLong("size", 0L)
+                apkDigest = asset.optString("digest", "")
                 break
             }
         }
@@ -140,6 +143,7 @@ class UpdateChecker(private val context: Context) {
                 downloadUrl = apkUrl,
                 fileSize = apkSize,
                 htmlUrl = htmlUrl,
+                digest = apkDigest,
             )
         )
     }
@@ -148,8 +152,9 @@ class UpdateChecker(private val context: Context) {
         val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager ?: return false
         val network = cm.activeNetwork ?: return false
         val caps = cm.getNetworkCapabilities(network) ?: return false
-        caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) &&
-            caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)
+        // 仅要求具备 INTERNET 能力。不检查 VALIDATED：该标志依赖连通性探测服务，
+        // 国内网络/车机上常恒为 false，导致网络正常却误报"无网络连接"。
+        caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
     }.getOrDefault(false)
 
     /**

@@ -17,13 +17,11 @@ import java.net.URL
 /**
  * OTA 下载与引导式安装器。
  *
- * 关键修复（v2.3）：
- * - try/finally 确保 conn.disconnect()，防连接泄漏
- * - 下载循环检查 ensureActive()，响应协程取消
- * - 复制缓冲区 64KB 提升大文件效率
- * - 删除 Android 7.0 以下死代码分支（minSdk=31）
- * - install() 前检查 canRequestPackageInstalls()，未授权时返回特殊状态引导授权
- * - contentLength 为 -1 时进度显示已下载字节数
+ * v3.1 增强（国内网络/车机可用性）：
+ * - 镜像回退：直连 GitHub 失败自动切换加速镜像逐个重试
+ * - 断点续传：连接中断后对已下载部分发起 Range 请求续传（最多 3 次）
+ * - sha256 校验：GitHub Release 资产自带 digest，下载完成后校验防半包安装
+ * - 下载写入 .part 临时文件，校验通过后才命名为最终文件
  */
 class UpdateInstaller(private val context: Context) {
 
@@ -38,60 +36,140 @@ class UpdateInstaller(private val context: Context) {
         data object NeedInstallPermission : InstallResult()        // 需用户授权"安装未知应用"
     }
 
+    companion object {
+        /** 下载镜像前缀：直连失败时按序尝试（镜像站时效性强，仅作回退不作首选） */
+        private val MIRROR_PREFIXES = listOf(
+            "",
+            "https://ghproxy.link/",
+            "https://gh-proxy.net/",
+        )
+        private const val MAX_RESUME_RETRIES = 3
+    }
+
     private val downloadDir: File by lazy {
         File(context.externalCacheDir, "updates").apply { if (!exists()) mkdirs() }
     }
 
     /**
-     * 下载 APK 文件。
-     * 关键修复：循环中检查 ensureActive() 响应取消；finally disconnect 防泄漏。
+     * 下载 APK：镜像逐个回退 + 断点续传 + sha256 校验。
+     * @param digest GitHub 提供的 "sha256:xxx"（可空；非空时下载后强制校验）
+     * @throws java.io.IOException 网络失败/校验失败时抛出，由调用方展示 message
      */
     suspend fun download(
         url: String,
+        digest: String = "",
         onProgress: (DownloadProgress) -> Unit,
     ): File? = withContext(Dispatchers.IO) {
+        var lastError: Exception? = null
+        for (mirror in MIRROR_PREFIXES) {
+            try {
+                val file = downloadSingle(mirror + url, digest, onProgress)
+                if (file != null) return@withContext file
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                lastError = e
+            }
+        }
+        throw lastError ?: java.io.IOException("下载失败")
+    }
+
+    /** 单地址下载（含断点续传与校验） */
+    private suspend fun downloadSingle(
+        url: String,
+        digest: String,
+        onProgress: (DownloadProgress) -> Unit,
+    ): File? {
+        val targetFile = File(downloadDir, "jingcun_update.apk")
+        val partFile = File(downloadDir, "jingcun_update.apk.part")
+        if (targetFile.exists()) targetFile.delete()
+
+        var resumeFrom = if (partFile.exists()) partFile.length() else 0L
+        var retries = 0
         var conn: HttpURLConnection? = null
         try {
-            val targetFile = File(downloadDir, "jingcun_update.apk")
-            if (targetFile.exists()) targetFile.delete()
+            while (true) {
+                conn?.disconnect() // 续传/重试前断开上一连接，防泄漏
+                conn = (URL(url).openConnection() as HttpURLConnection).apply {
+                    requestMethod = "GET"
+                    connectTimeout = 15000
+                    readTimeout = 30000
+                    setRequestProperty("User-Agent", "JingCunCleaner-OTA")
+                    instanceFollowRedirects = true
+                    if (resumeFrom > 0) setRequestProperty("Range", "bytes=$resumeFrom-")
+                }
+                conn.connect()
+                when (conn.responseCode) {
+                    206 -> { /* 断点续传命中 */ }
+                    200 -> { if (resumeFrom > 0) { partFile.delete(); resumeFrom = 0L } }
+                    416 -> { partFile.delete(); resumeFrom = 0L; conn.disconnect(); continue }
+                    else -> return null
+                }
 
-            conn = (URL(url).openConnection() as HttpURLConnection).apply {
-                requestMethod = "GET"
-                connectTimeout = 15000
-                readTimeout = 30000
-                setRequestProperty("User-Agent", "JingCunCleaner-OTA")
-                instanceFollowRedirects = true
-            }
-            conn.connect()
-            if (conn.responseCode != 200) return@withContext null
-
-            val total = conn.contentLengthLong
-            targetFile.outputStream().use { output ->
-                conn.inputStream.use { input ->
-                    val buffer = ByteArray(64 * 1024) // 64KB 缓冲提升大文件效率
-                    var downloaded = 0L
-                    var lastReport = 0L
-                    while (true) {
-                        // 响应协程取消：用户点"取消"后立即停止下载
-                        currentCoroutineContext().ensureActive()
-                        val read = input.read(buffer)
-                        if (read == -1) break
-                        output.write(buffer, 0, read)
-                        downloaded += read
-                        // 节流：每 200ms 回调一次进度，避免频繁重组 UI
-                        if (downloaded - lastReport > 200 * 1024 || downloaded == total) {
-                            onProgress(DownloadProgress(downloaded, total))
-                            lastReport = downloaded
+                val partial = conn.responseCode == 206
+                val total = if (partial) resumeFrom + conn.contentLengthLong else conn.contentLengthLong
+                val base = if (partial) resumeFrom else 0L
+                try {
+                    java.io.FileOutputStream(partFile, partial).use { output ->
+                        conn.inputStream.use { input ->
+                            val buffer = ByteArray(64 * 1024)
+                            var downloaded = base
+                            var lastReport = downloaded
+                            while (true) {
+                                currentCoroutineContext().ensureActive()
+                                val read = input.read(buffer)
+                                if (read == -1) break
+                                output.write(buffer, 0, read)
+                                downloaded += read
+                                // 节流：每 200KB 回调一次进度，避免频繁重组 UI
+                                if (downloaded - lastReport > 200 * 1024) {
+                                    onProgress(DownloadProgress(downloaded, total))
+                                    lastReport = downloaded
+                                }
+                            }
                         }
                     }
+                } catch (e: kotlinx.coroutines.CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    // 连接中断：保留 .part，超限前自动续传
+                    resumeFrom = partFile.length()
+                    retries++
+                    if (resumeFrom > 0 && retries <= MAX_RESUME_RETRIES) continue
+                    throw e
                 }
+
+                onProgress(DownloadProgress(partFile.length(), total))
+                if (!verifySha256(partFile, digest)) {
+                    partFile.delete()
+                    throw java.io.IOException("安装包校验失败（sha256 不匹配），已清理重试")
+                }
+                if (!partFile.renameTo(targetFile)) {
+                    partFile.copyTo(targetFile, overwrite = true)
+                    partFile.delete()
+                }
+                return targetFile.takeIf { it.exists() && it.length() > 0 }
             }
-            targetFile.takeIf { it.exists() && it.length() > 0 }
-        } catch (e: Exception) {
-            null
         } finally {
             conn?.disconnect()
         }
+    }
+
+    /** sha256 校验；digest 为空时跳过（仅存在性与非空校验） */
+    private fun verifySha256(file: File, digest: String): Boolean {
+        if (!file.exists() || file.length() == 0L) return false
+        if (digest.isBlank()) return true
+        return runCatching {
+            val expected = digest.substringAfter("sha256:").substringAfter("SHA256:").trim().lowercase()
+            if (expected.length != 64) return true // digest 格式异常时不拦截更新
+            val md = java.security.MessageDigest.getInstance("SHA-256")
+            file.inputStream().use { input ->
+                val buffer = ByteArray(64 * 1024)
+                var read: Int
+                while (input.read(buffer).also { read = it } != -1) md.update(buffer, 0, read)
+            }
+            md.digest().joinToString("") { "%02x".format(it) } == expected
+        }.getOrDefault(false)
     }
 
     /**

@@ -50,6 +50,7 @@ class MainActivity : ComponentActivity() {
         setContent {
             val themeMode by themeModeFlow.collectAsState(initial = ThemeMode.SYSTEM)
             JingCunTheme(themeMode = themeMode) {
+                // calculateWindowSizeClass 本身是 @Composable 函数，直接调用即可
                 AppRoot(windowSizeClass = calculateWindowSizeClass(this@MainActivity))
             }
         }

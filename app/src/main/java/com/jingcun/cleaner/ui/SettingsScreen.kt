@@ -122,7 +122,7 @@ fun SettingsScreen() {
                 }
             }
             // 关于
-            item { AboutCard(versionName = vm.currentVersionName()) }
+            item { AboutCard(versionName = vm.currentVersionName(), deviceNote = vm.deviceNote()) }
         }
     }
 }
@@ -147,7 +147,7 @@ private fun SettingCard(title: String, subtitle: String, content: @Composable ()
 
 /** 关于卡片：应用信息与保存路径说明 */
 @Composable
-private fun AboutCard(versionName: String) {
+private fun AboutCard(versionName: String, deviceNote: String? = null) {
     Card(
         shape = RoundedCornerShape(20.dp),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
@@ -168,6 +168,15 @@ private fun AboutCard(versionName: String) {
                 }
             }
             Spacer(Modifier.height(12.dp))
+            if (deviceNote != null) {
+                Text(
+                    deviceNote,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.primary,
+                    fontWeight = FontWeight.SemiBold,
+                )
+                Spacer(Modifier.height(6.dp))
+            }
             Text(
                 "文件保存位置：\n· 归纳目录 /storage/emulated/0/APK归纳/\n· 提取目录 /storage/emulated/0/APK归纳/提取/",
                 style = MaterialTheme.typography.bodySmall,

@@ -27,6 +27,7 @@ import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.ErrorOutline
 import androidx.compose.material.icons.filled.FolderZip
 import androidx.compose.material.icons.filled.Inventory2
+import androidx.compose.material.icons.filled.OpenInNew
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Search
@@ -35,6 +36,7 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
@@ -44,16 +46,22 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -74,10 +82,17 @@ import com.jingcun.cleaner.util.formatBytes
 fun OrganizeScreen() {
     val vm: ApkViewModel = viewModel()
     val state by vm.organizeState.collectAsState()
+    val context = LocalContext.current
+
+    var showGrantOptions by rememberSaveable { mutableStateOf(false) }
 
     val permissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.StartActivityForResult()
-    ) { vm.updateStoragePermission() }
+    ) {
+        vm.updateStoragePermission()
+        // 返回后仍未授权：可能是车机诱饵页（比亚迪等），引导用户换一种授权入口
+        if (!vm.organizeState.value.hasStoragePermission) showGrantOptions = true
+    }
 
     // 运行时权限弹窗（降级模式用，车机无全盘授权页时走这里）
     val runtimePermissionLauncher = rememberLauncherForActivityResult(
@@ -94,7 +109,27 @@ fun OrganizeScreen() {
         }
     }
 
-    // 已有存储权限时，进入页面自动扫描一次
+    // 「查看归纳目录」：检测文件管理器是否可处理目录查看，无则隐藏入口（比亚迪等无文件管理器的车机）
+    val canOpenFolder = remember(vm.organizeTargetPath()) {
+        runCatching {
+            val intent = Intent(Intent.ACTION_VIEW).apply {
+                setDataAndType(android.net.Uri.parse(vm.organizeTargetPath()), "resource/folder")
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            context.packageManager.resolveActivity(intent, 0) != null
+        }.getOrDefault(false)
+    }
+
+    val openFolder: () -> Unit = {
+        runCatching {
+            context.startActivity(Intent(Intent.ACTION_VIEW).apply {
+                setDataAndType(android.net.Uri.parse(vm.organizeTargetPath()), "resource/folder")
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            })
+        }
+    }
+
+    // 已有存储权限时，进入页面自动扫描一次（优先用扫描缓存秒出列表）
     LaunchedEffect(Unit) {
         if (vm.shouldAutoScan()) vm.scanApks()
     }
@@ -140,17 +175,21 @@ fun OrganizeScreen() {
                 }
                 OrganizePhase.SCANNING -> item { ScanningCard(state) }
                 OrganizePhase.READY -> {
-                    item { SummaryCard(state) }
+                    item { SummaryCard(state, onSelectAll = { vm.selectAll(it) }) }
                     item {
                         BigButton(
-                            text = "一键归纳（${state.apks.size} 个）",
+                            text = "一键归纳（已选 ${state.selectedPaths.size}/${state.apks.size}）",
                             icon = Icons.Filled.PlayArrow,
-                            enabled = state.apks.isNotEmpty(),
+                            enabled = state.selectedPaths.isNotEmpty(),
                             onClick = vm::organizeAllApks,
                         )
                     }
                     items(state.apks, key = { it.sourceFile.absolutePath }) { apk ->
-                        ApkItemCard(apk)
+                        ApkItemCard(
+                            apk = apk,
+                            checked = apk.sourceFile.absolutePath in state.selectedPaths,
+                            onToggle = { vm.toggleSelect(apk.sourceFile.absolutePath) },
+                        )
                     }
                 }
                 OrganizePhase.ORGANIZING -> item { OrganizingCard(state) }
@@ -161,12 +200,55 @@ fun OrganizeScreen() {
                             successCount = state.successCount,
                             total = state.totalCount,
                             targetPath = vm.organizeTargetPath(),
-                            onAgain = { vm.resetOrganize(); vm.scanApks() },
+                            canOpenFolder = canOpenFolder,
+                            onOpenFolder = openFolder,
+                            onAgain = { vm.resetOrganize(); vm.scanApks(force = true) },
                         )
                     }
                 }
             }
         }
+    }
+
+    // 授权选项链对话框：标准授权页无效（如比亚迪诱饵页）时，提供其他入口
+    if (showGrantOptions) {
+        val options = vm.storageGrantOptions()
+        androidx.compose.material3.AlertDialog(
+            onDismissRequest = { showGrantOptions = false },
+            title = { Text("换一种方式授权", fontWeight = FontWeight.Bold) },
+            text = {
+                Column {
+                    Text(
+                        "刚才的授权页没有生效（部分车机会拦截系统设置页）。试试下面其他方式：",
+                        style = MaterialTheme.typography.bodyMedium,
+                    )
+                    Spacer(Modifier.height(10.dp))
+                    options.forEach { option ->
+                        TextButton(
+                            onClick = {
+                                showGrantOptions = false
+                                runCatching { permissionLauncher.launch(option.intent) }
+                                    .onFailure { runtimePermissionLauncher.launch(vm.legacyStoragePermissions()) }
+                            },
+                            modifier = Modifier.fillMaxWidth(),
+                        ) {
+                            Column {
+                                Text(option.title, fontWeight = FontWeight.SemiBold)
+                                Text(
+                                    option.desc,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                        }
+                    }
+                }
+            },
+            confirmButton = {},
+            dismissButton = {
+                TextButton(onClick = { showGrantOptions = false }) { Text("关闭") }
+            },
+        )
     }
 }
 
@@ -292,16 +374,19 @@ private fun ScanningCard(state: OrganizeUiState) {
     }
 }
 
-/** 扫描结果摘要卡 */
+/** 扫描结果摘要卡（含已选计数与全选/全不选） */
 @Composable
-private fun SummaryCard(state: OrganizeUiState) {
-    val totalSize = state.apks.sumOf { it.size }
+private fun SummaryCard(state: OrganizeUiState, onSelectAll: (Boolean) -> Unit) {
+    val selectedSize = state.apks
+        .filter { it.sourceFile.absolutePath in state.selectedPaths }
+        .sumOf { it.size }
+    val allSelected = state.selectedPaths.size == state.apks.size && state.apks.isNotEmpty()
     Card(
         shape = RoundedCornerShape(20.dp),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer),
         modifier = Modifier.fillMaxWidth(),
     ) {
-        Row(modifier = Modifier.padding(18.dp), verticalAlignment = Alignment.CenterVertically) {
+        Row(modifier = Modifier.padding(start = 18.dp, top = 14.dp, bottom = 14.dp, end = 6.dp), verticalAlignment = Alignment.CenterVertically) {
             Surface(shape = CircleShape, color = MaterialTheme.colorScheme.primary, modifier = Modifier.size(48.dp)) {
                 Box(contentAlignment = Alignment.Center) {
                     Icon(Icons.Filled.Inventory2, contentDescription = null, tint = MaterialTheme.colorScheme.onPrimary, modifier = Modifier.size(26.dp))
@@ -310,31 +395,41 @@ private fun SummaryCard(state: OrganizeUiState) {
             Spacer(Modifier.width(14.dp))
             Column(modifier = Modifier.weight(1f)) {
                 Text(
-                    "发现 ${state.apks.size} 个 APK",
+                    "发现 ${state.apks.size} 个 APK · 已选 ${state.selectedPaths.size}",
                     style = MaterialTheme.typography.titleMedium,
                     fontWeight = FontWeight.Bold,
                     color = MaterialTheme.colorScheme.onPrimaryContainer,
                 )
                 Text(
-                    "共 ${formatBytes(totalSize)}",
+                    "已选共 ${formatBytes(selectedSize)} / 全部 ${formatBytes(state.apks.sumOf { it.size })}",
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onPrimaryContainer,
                 )
+            }
+            TextButton(onClick = { onSelectAll(!allSelected) }) {
+                Text(if (allSelected) "全不选" else "全选", fontWeight = FontWeight.SemiBold)
             }
         }
     }
 }
 
-/** 单个 APK 条目：展示归纳后的目标文件名预览 */
+/** 单个 APK 条目：勾选预览 + 归纳后目标文件名 */
 @Composable
-private fun ApkItemCard(apk: ApkOrganizer.ApkInfo) {
+private fun ApkItemCard(
+    apk: ApkOrganizer.ApkInfo,
+    checked: Boolean,
+    onToggle: () -> Unit,
+) {
     Card(
         shape = RoundedCornerShape(14.dp),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        colors = CardDefaults.cardColors(
+            containerColor = if (checked) MaterialTheme.colorScheme.surface else MaterialTheme.colorScheme.surfaceVariant,
+        ),
         elevation = CardDefaults.cardElevation(defaultElevation = 1.dp),
         modifier = Modifier.fillMaxWidth(),
     ) {
-        Row(modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+        Row(modifier = Modifier.fillMaxWidth().padding(start = 6.dp, end = 14.dp, top = 6.dp, bottom = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+            Checkbox(checked = checked, onCheckedChange = { onToggle() })
             Surface(shape = CircleShape, color = MaterialTheme.colorScheme.secondaryContainer, modifier = Modifier.size(38.dp)) {
                 Box(contentAlignment = Alignment.Center) {
                     Icon(Icons.Filled.FolderZip, contentDescription = null, tint = MaterialTheme.colorScheme.onSecondaryContainer, modifier = Modifier.size(20.dp))
@@ -349,13 +444,26 @@ private fun ApkItemCard(apk: ApkOrganizer.ApkInfo) {
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                 )
-                Text(
-                    apk.sourceFile.absolutePath.substringAfter("/storage/emulated/0/").ifEmpty { apk.sourceFile.absolutePath },
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    if (!apk.recognized) {
+                        Surface(shape = RoundedCornerShape(6.dp), color = MaterialTheme.colorScheme.tertiaryContainer) {
+                            Text(
+                                "未识别",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onTertiaryContainer,
+                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                            )
+                        }
+                        Spacer(Modifier.width(6.dp))
+                    }
+                    Text(
+                        apk.sourceFile.absolutePath.substringAfter("/storage/emulated/0/").ifEmpty { apk.sourceFile.absolutePath },
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
             }
             Text(
                 formatBytes(apk.size),
@@ -398,7 +506,15 @@ private fun OrganizingCard(state: OrganizeUiState) {
 
 /** 归纳完成卡 */
 @Composable
-private fun DoneCard(message: String, successCount: Int, total: Int, targetPath: String, onAgain: () -> Unit) {
+private fun DoneCard(
+    message: String,
+    successCount: Int,
+    total: Int,
+    targetPath: String,
+    canOpenFolder: Boolean,
+    onOpenFolder: () -> Unit,
+    onAgain: () -> Unit,
+) {
     val allSuccess = successCount == total
     Card(
         shape = RoundedCornerShape(24.dp),
@@ -438,6 +554,18 @@ private fun DoneCard(message: String, successCount: Int, total: Int, targetPath:
                 textAlign = TextAlign.Center,
             )
             Spacer(Modifier.height(20.dp))
+            if (canOpenFolder) {
+                OutlinedButton(
+                    onClick = onOpenFolder,
+                    shape = RoundedCornerShape(14.dp),
+                    modifier = Modifier.fillMaxWidth().height(48.dp),
+                ) {
+                    Icon(Icons.Filled.OpenInNew, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Spacer(Modifier.width(6.dp))
+                    Text("查看归纳目录", fontWeight = FontWeight.Bold)
+                }
+                Spacer(Modifier.height(10.dp))
+            }
             OutlinedButton(
                 onClick = onAgain,
                 shape = RoundedCornerShape(14.dp),
