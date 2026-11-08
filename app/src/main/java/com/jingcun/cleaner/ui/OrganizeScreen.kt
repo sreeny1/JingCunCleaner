@@ -68,6 +68,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.platform.LocalContext
@@ -504,7 +505,10 @@ private fun ApkItemCard(
             containerColor = if (checked) MaterialTheme.colorScheme.surface else MaterialTheme.colorScheme.surfaceVariant,
         ),
         elevation = CardDefaults.cardElevation(defaultElevation = 1.dp),
-        modifier = Modifier.fillMaxWidth(),
+        // 已归纳的 APK 整卡轻微降透明度，视觉上弱化（仍可手动勾选归纳）
+        modifier = Modifier
+            .fillMaxWidth()
+            .alpha(if (apk.alreadyOrganized) 0.72f else 1f),
     ) {
         Row(modifier = Modifier.fillMaxWidth().padding(start = 6.dp, end = 14.dp, top = 6.dp, bottom = 6.dp), verticalAlignment = Alignment.CenterVertically) {
             Checkbox(checked = checked, onCheckedChange = { onToggle() })
@@ -541,6 +545,21 @@ private fun ApkItemCard(
                                 style = MaterialTheme.typography.labelSmall,
                                 color = if (isError) MaterialTheme.colorScheme.onErrorContainer
                                 else MaterialTheme.colorScheme.onTertiaryContainer,
+                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                            )
+                        }
+                        Spacer(Modifier.width(6.dp))
+                    }
+                    if (apk.alreadyOrganized) {
+                        // 已归纳徽标：归纳目录已有同名同大小文件（COPY 模式原件重现/重复文件）
+                        Surface(
+                            shape = RoundedCornerShape(6.dp),
+                            color = MaterialTheme.colorScheme.secondaryContainer,
+                        ) {
+                            Text(
+                                "已归纳",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSecondaryContainer,
                                 modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
                             )
                         }

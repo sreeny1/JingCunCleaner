@@ -39,7 +39,7 @@ data class OrganizeUiState(
     val successCount: Int = 0,
     val message: String = "",
     val hasStoragePermission: Boolean = false,
-    /** 归纳前预览勾选的 APK 路径（默认全选；完整性异常的文件默认不勾） */
+    /** 归纳前预览勾选的 APK 路径（默认全选；完整性异常/已归纳的文件默认不勾） */
     val selectedPaths: Set<String> = emptySet(),
     /** 存储卷筛选（null=全部；切换后勾选自动重置为当前卷） */
     val selectedVolume: String? = null,
@@ -197,9 +197,9 @@ class ApkViewModel(app: Application) : AndroidViewModel(app) {
                         apks = cached,
                         totalCount = cached.size,
                         hasStoragePermission = current.hasStoragePermission,
-                        // 默认勾选完整性正常的文件，损坏/非标准包默认不勾
+                        // 默认勾选完整性正常且未归纳过的文件（损坏/非标准包/已归纳默认不勾）
                         selectedPaths = cached
-                            .filter { it.integrity == ApkOrganizer.ApkIntegrity.OK }
+                            .filter { it.integrity == ApkOrganizer.ApkIntegrity.OK && !it.alreadyOrganized }
                             .map { it.sourceFile.absolutePath }
                             .toSet(),
                     )
@@ -228,9 +228,9 @@ class ApkViewModel(app: Application) : AndroidViewModel(app) {
                     phase = if (list.isEmpty()) OrganizePhase.IDLE else OrganizePhase.READY,
                     apks = list,
                     totalCount = list.size,
-                    // 默认勾选完整性正常的文件，损坏/非标准包默认不勾
+                    // 默认勾选完整性正常且未归纳过的文件（损坏/非标准包/已归纳默认不勾）
                     selectedPaths = list
-                        .filter { it.integrity == ApkOrganizer.ApkIntegrity.OK }
+                        .filter { it.integrity == ApkOrganizer.ApkIntegrity.OK && !it.alreadyOrganized }
                         .map { it.sourceFile.absolutePath }
                         .toSet(),
                     message = if (list.isEmpty()) "未找到 APK 文件" else "",
@@ -257,7 +257,7 @@ class ApkViewModel(app: Application) : AndroidViewModel(app) {
 
     /**
      * 切换存储卷筛选（null=全部）。
-     * 切换后勾选自动重置为当前筛选范围（完整性异常的文件默认不勾，用户可手动勾上）。
+     * 切换后勾选自动重置为当前筛选范围（完整性异常/已归纳的文件默认不勾，用户可手动勾上）。
      */
     fun setVolumeFilter(volume: String?) {
         _organizeState.update { s ->
@@ -265,7 +265,7 @@ class ApkViewModel(app: Application) : AndroidViewModel(app) {
             s.copy(
                 selectedVolume = volume,
                 selectedPaths = filtered
-                    .filter { it.integrity == ApkOrganizer.ApkIntegrity.OK }
+                    .filter { it.integrity == ApkOrganizer.ApkIntegrity.OK && !it.alreadyOrganized }
                     .map { it.sourceFile.absolutePath }
                     .toSet(),
             )

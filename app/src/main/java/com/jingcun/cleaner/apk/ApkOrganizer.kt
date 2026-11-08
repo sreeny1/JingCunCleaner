@@ -56,6 +56,8 @@ class ApkOrganizer(private val context: Context) {
         val volumeName: String = "",
         /** 完整性判定（仅解析失败的文件会带非 OK 值） */
         val integrity: ApkIntegrity = ApkIntegrity.OK,
+        /** 归纳目录已存在同名同大小文件（COPY 模式归纳后保留的原件等） */
+        val alreadyOrganized: Boolean = false,
     )
 
     data class OrganizeResult(
@@ -116,6 +118,11 @@ class ApkOrganizer(private val context: Context) {
         var scanned = 0
         // 卷根 → 显示名（本机存储 / USB 存储设备 / SD 卡 / 外置存储 N）
         val volumeNames = resolveVolumeNames()
+        // 归纳目录「文件名→大小」索引：与归纳判重（findExistingSameSize）同源判定，
+        // 命中者标记「已归纳」——COPY 模式下原件重现时灰显提示、默认不勾选
+        val targetIndex = runCatching {
+            targetDir.listFiles()?.associate { it.name to it.length() }
+        }.getOrNull().orEmpty()
         for (volume in storageVolumes()) {
             val volumeLabel = volumeNames[runCatching { volume.canonicalPath }.getOrDefault(volume.absolutePath)]
                 ?: "外置存储"
@@ -139,7 +146,14 @@ class ApkOrganizer(private val context: Context) {
                         scanned++
                         onProgress(Progress(scanned, -1, c.name))
                         // 解析失败（XAPK/APKS 容器、损坏包）不再静默丢弃，保留原名进列表
-                        result.add(parseApk(c, volumeLabel) ?: unrecognizedInfo(c, volumeLabel))
+                        val info = parseApk(c, volumeLabel) ?: unrecognizedInfo(c, volumeLabel)
+                        result.add(
+                            if (info.size > 0 && targetIndex[info.targetName] == info.size) {
+                                info.copy(alreadyOrganized = true)
+                            } else {
+                                info
+                            },
+                        )
                     }
                 }
             }
@@ -343,7 +357,8 @@ class ApkOrganizer(private val context: Context) {
                         .put("t", a.targetName)
                         .put("r", a.recognized)
                         .put("vol", a.volumeName)
-                        .put("ig", a.integrity.name),
+                        .put("ig", a.integrity.name)
+                        .put("ao", a.alreadyOrganized),
                 )
             }
             cacheFile.writeText(arr.toString())
@@ -377,6 +392,10 @@ class ApkOrganizer(private val context: Context) {
                         integrity = runCatching {
                             ApkIntegrity.valueOf(o.optString("ig", "OK"))
                         }.getOrDefault(ApkIntegrity.OK),
+                        // 缓存标记复核：目标目录仍存在同名同大小文件才保留「已归纳」
+                        alreadyOrganized =
+                            o.optBoolean("ao", false) &&
+                                findExistingSameSize(o.optString("t"), size) != null,
                     ),
                 )
             }
