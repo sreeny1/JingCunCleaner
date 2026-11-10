@@ -43,6 +43,10 @@ data class OrganizeUiState(
     val selectedPaths: Set<String> = emptySet(),
     /** 存储卷筛选（null=全部；切换后勾选自动重置为当前卷） */
     val selectedVolume: String? = null,
+    /** 正在清理重复文件（删除前逐个校验同应用/同版本/同签名） */
+    val cleaning: Boolean = false,
+    /** 最近一次清理结果消息（重扫后保留展示，直到下次清理更新） */
+    val cleanMessage: String = "",
 )
 
 // ==================== 应用提取状态 ====================
@@ -182,7 +186,7 @@ class ApkViewModel(app: Application) : AndroidViewModel(app) {
     /** 扫描所有存储卷中的 APK 文件（force=false 优先用缓存秒出列表，force=true 强制全盘重扫） */
     fun scanApks(force: Boolean = false) {
         val current = _organizeState.value
-        if (current.phase == OrganizePhase.SCANNING || current.phase == OrganizePhase.ORGANIZING) return
+        if (current.phase == OrganizePhase.SCANNING || current.phase == OrganizePhase.ORGANIZING || current.cleaning) return
         autoScanRequested = true
         val old = organizeJob
         organizeJob = viewModelScope.launch {
@@ -288,7 +292,7 @@ class ApkViewModel(app: Application) : AndroidViewModel(app) {
     /** 一键归纳：将勾选且属于当前卷筛选的 APK 移动/复制到「APK归纳」目录并重命名 */
     fun organizeAllApks() {
         val s = _organizeState.value
-        if (s.phase != OrganizePhase.READY || s.apks.isEmpty()) return
+        if (s.phase != OrganizePhase.READY || s.apks.isEmpty() || s.cleaning) return
         val targets = s.apks.filter {
             it.sourceFile.absolutePath in s.selectedPaths &&
                 (s.selectedVolume == null || it.volumeName == s.selectedVolume)
@@ -324,6 +328,50 @@ class ApkViewModel(app: Application) : AndroidViewModel(app) {
                 _organizeState.value = _organizeState.value.copy(
                     phase = OrganizePhase.DONE,
                     message = "归纳失败：${e.message ?: e.javaClass.simpleName}",
+                )
+            }
+        }
+    }
+
+    /**
+     * 清理重复文件：删除当前卷筛选下已归纳的源文件副本。
+     * 删除前逐个校验「同应用 + 同版本 + 同签名」，不一致的自动保留；
+     * 完成后清缓存并强制重扫刷新列表。
+     */
+    fun cleanDuplicates() {
+        val s = _organizeState.value
+        if (s.phase != OrganizePhase.READY || s.cleaning || s.apks.isEmpty()) return
+        val targets = s.apks.filter {
+            it.alreadyOrganized && (s.selectedVolume == null || it.volumeName == s.selectedVolume)
+        }
+        if (targets.isEmpty()) return
+        _organizeState.value = s.copy(cleaning = true, cleanMessage = "")
+        val old = organizeJob
+        organizeJob = viewModelScope.launch {
+            old?.cancelAndJoin()
+            try {
+                var deleted = 0
+                for (apk in targets) {
+                    if (apkOrganizer.deleteDuplicate(apk)) deleted++
+                }
+                runCatching { apkOrganizer.clearScanCache() }
+                _organizeState.value = _organizeState.value.copy(
+                    cleaning = false,
+                    cleanMessage = when {
+                        deleted == targets.size -> "已清理 $deleted 个重复文件"
+                        deleted == 0 -> "未清理：文件与归纳目录版本不一致，已全部保留"
+                        else -> "已清理 $deleted / ${targets.size} 个，其余版本不一致已保留"
+                    },
+                )
+                // 删除后强制重扫，列表立即反映最新状态
+                scanApks(force = true)
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                _organizeState.value = _organizeState.value.copy(cleaning = false)
+                throw e
+            } catch (e: Throwable) {
+                _organizeState.value = _organizeState.value.copy(
+                    cleaning = false,
+                    cleanMessage = "清理失败：${e.message ?: e.javaClass.simpleName}",
                 )
             }
         }

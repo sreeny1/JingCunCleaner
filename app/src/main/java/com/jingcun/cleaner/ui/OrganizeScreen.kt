@@ -30,6 +30,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.DeleteOutline
 import androidx.compose.material.icons.filled.ErrorOutline
 import androidx.compose.material.icons.filled.FolderZip
 import androidx.compose.material.icons.filled.Inventory2
@@ -44,6 +45,7 @@ import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Checkbox
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
 import androidx.compose.material3.FilterChip
@@ -95,6 +97,7 @@ fun OrganizeScreen() {
     val context = LocalContext.current
 
     var showGrantOptions by rememberSaveable { mutableStateOf(false) }
+    var showCleanConfirm by rememberSaveable { mutableStateOf(false) }
 
     val permissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.StartActivityForResult()
@@ -189,7 +192,18 @@ fun OrganizeScreen() {
                     if (state.apks.size > 1) {
                         item(key = "volumes") { VolumeFilterRow(state, onSelect = vm::setVolumeFilter) }
                     }
-                    item { SummaryCard(state, onSelectAll = { vm.selectAll(it) }) }
+                    item { SummaryCard(state, onSelectAll = { vm.selectAll(it) }, onRescan = { vm.scanApks(force = true) }) }
+                    // 最近一次清理结果消息（清理后自动重扫，消息保留在此展示）
+                    if (state.cleanMessage.isNotEmpty()) {
+                        item(key = "cleanMsg") {
+                            Text(
+                                state.cleanMessage,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.padding(horizontal = 4.dp),
+                            )
+                        }
+                    }
                     item {
                         BigButton(
                             text = "一键归纳（已选 ${selectedCountInFilter(state)}/${filteredApks(state).size}）",
@@ -197,6 +211,30 @@ fun OrganizeScreen() {
                             enabled = selectedCountInFilter(state) > 0,
                             onClick = vm::organizeAllApks,
                         )
+                    }
+                    // 清理重复文件：仅删除与归纳目录「同应用+同版本+同签名」的源文件副本
+                    if (filteredApks(state).any { it.alreadyOrganized }) {
+                        item(key = "cleanDup") {
+                            OutlinedButton(
+                                onClick = { showCleanConfirm = true },
+                                enabled = !state.cleaning,
+                                shape = RoundedCornerShape(16.dp),
+                                modifier = Modifier.fillMaxWidth().height(48.dp),
+                            ) {
+                                if (state.cleaning) {
+                                    CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
+                                    Spacer(Modifier.width(8.dp))
+                                    Text("正在清理…", fontWeight = FontWeight.Bold)
+                                } else {
+                                    Icon(Icons.Filled.DeleteOutline, contentDescription = null, modifier = Modifier.size(18.dp))
+                                    Spacer(Modifier.width(8.dp))
+                                    Text(
+                                        "清理重复文件（${filteredApks(state).count { it.alreadyOrganized }}）",
+                                        fontWeight = FontWeight.Bold,
+                                    )
+                                }
+                            }
+                        }
                     }
                     items(
                         filteredApks(state),
@@ -265,6 +303,34 @@ fun OrganizeScreen() {
             confirmButton = {},
             dismissButton = {
                 TextButton(onClick = { showGrantOptions = false }) { Text("关闭") }
+            },
+        )
+    }
+
+    // 清理重复文件确认框：明确告知删除不可恢复与保护规则
+    if (showCleanConfirm) {
+        val dupCount = filteredApks(state).count { it.alreadyOrganized }
+        androidx.compose.material3.AlertDialog(
+            onDismissRequest = { showCleanConfirm = false },
+            title = { Text("清理重复文件", fontWeight = FontWeight.Bold) },
+            text = {
+                Text(
+                    "将删除 $dupCount 个已归纳的重复源文件。\n\n" +
+                        "仅删除与「${ApkOrganizer.TARGET_DIR_NAME}」目录中同应用、同版本、同签名的文件；" +
+                        "版本或签名不一致的会自动保留。删除后不可恢复。",
+                    style = MaterialTheme.typography.bodyMedium,
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    showCleanConfirm = false
+                    vm.cleanDuplicates()
+                }) {
+                    Text("删除", color = MaterialTheme.colorScheme.error, fontWeight = FontWeight.SemiBold)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showCleanConfirm = false }) { Text("取消") }
             },
         )
     }
@@ -446,9 +512,9 @@ private fun ScanningCard(state: OrganizeUiState) {
     }
 }
 
-/** 扫描结果摘要卡（计数随卷筛选联动，数字变化带动画） */
+/** 扫描结果摘要卡（计数随卷筛选联动，数字变化带动画；含重新扫描与全选） */
 @Composable
-private fun SummaryCard(state: OrganizeUiState, onSelectAll: (Boolean) -> Unit) {
+private fun SummaryCard(state: OrganizeUiState, onSelectAll: (Boolean) -> Unit, onRescan: () -> Unit) {
     val filtered = filteredApks(state)
     val selectedCount = selectedCountInFilter(state)
     val selectedSize = filtered
@@ -484,6 +550,11 @@ private fun SummaryCard(state: OrganizeUiState, onSelectAll: (Boolean) -> Unit) 
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onPrimaryContainer,
                 )
+            }
+            TextButton(onClick = onRescan, enabled = !state.cleaning) {
+                Icon(Icons.Filled.Refresh, contentDescription = null, modifier = Modifier.size(16.dp))
+                Spacer(Modifier.width(4.dp))
+                Text("重新扫描", fontWeight = FontWeight.SemiBold)
             }
             TextButton(onClick = { onSelectAll(!allSelected) }) {
                 Text(if (allSelected) "全不选" else "全选", fontWeight = FontWeight.SemiBold)

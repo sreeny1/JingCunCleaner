@@ -314,6 +314,46 @@ class ApkOrganizer(private val context: Context) {
         results
     }
 
+    // ---------- 重复文件清理（同应用 + 同版本 + 同签名 才允许删除） ----------
+
+    /** 读取未安装 APK 的主签名（GET_SIGNATURES 自 API 1 起可用，兼容全部车机），失败返回 null */
+    private fun signatureOf(file: File): String? = runCatching {
+        context.packageManager
+            .getPackageArchiveInfo(file.absolutePath, PackageManager.GET_SIGNATURES)
+            ?.signatures
+            ?.firstOrNull()
+            ?.toCharsString()
+    }.getOrNull()
+
+    /**
+     * 校验源 APK 与归纳目录副本是否为同一个应用、同一个版本：
+     * 包名 + versionCode + versionName + 文件大小 + 签名 五重一致才认定。
+     * 任何一项无法确认都返回 false——宁可不删，不可误删。
+     */
+    fun isSameAppVersion(source: ApkInfo, target: File): Boolean {
+        if (!source.recognized || source.packageName.isBlank()) return false
+        if (!target.exists() || target.length() != source.size) return false
+        val pi = runCatching {
+            context.packageManager.getPackageArchiveInfo(target.absolutePath, PackageManager.GET_SIGNATURES)
+        }.getOrNull() ?: return false
+        if (pi.packageName != source.packageName) return false
+        if (PackageInfoCompat.getLongVersionCode(pi) != source.versionCode) return false
+        if ((pi.versionName ?: "") != source.versionName) return false
+        val sourceSig = signatureOf(source.sourceFile) ?: return false
+        val targetSig = pi.signatures?.firstOrNull()?.toCharsString() ?: return false
+        return sourceSig == targetSig
+    }
+
+    /**
+     * 删除一个重复源文件：仅当归纳目录存在同应用/同版本/同签名的副本时执行。
+     * @return true = 已删除
+     */
+    suspend fun deleteDuplicate(apk: ApkInfo): Boolean = withContext(Dispatchers.IO) {
+        val target = File(targetDir, apk.targetName)
+        if (!isSameAppVersion(apk, target)) return@withContext false
+        runCatching { apk.sourceFile.delete() }.getOrDefault(false) && !apk.sourceFile.exists()
+    }
+
     /** 归纳目标目录路径 */
     fun targetDir(): File = targetDir
 
