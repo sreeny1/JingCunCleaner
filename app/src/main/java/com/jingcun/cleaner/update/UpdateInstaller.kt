@@ -22,6 +22,9 @@ import java.net.URL
  * - 断点续传：连接中断后对已下载部分发起 Range 请求续传（最多 3 次）
  * - sha256 校验：GitHub Release 资产自带 digest，下载完成后校验防半包安装
  * - 下载写入 .part 临时文件，校验通过后才命名为最终文件
+ * v3.4.1 修复（车机更新 sha256 校验失败）：.part 与下载 URL 绑定（跨镜像
+ *   不再复用半截文件，杜绝不同源内容拼接错位）；206 续传校验 Content-Range
+ *   起点；新增下载完整性显式检查
  */
 class UpdateInstaller(private val context: Context) {
 
@@ -51,6 +54,14 @@ class UpdateInstaller(private val context: Context) {
     }
 
     /**
+     * 断点续传的半截文件与下载 URL 绑定（按 URL 哈希命名）。
+     * 此前所有镜像共用一个 .part：直连残留的半截文件被镜像续传拼接，
+     * 不同源内容错位导致 sha256 校验必败、更新重试始终失败。
+     */
+    private fun partFileFor(url: String): File =
+        File(downloadDir, "jingcun_update_${Integer.toHexString(url.hashCode())}.apk.part")
+
+    /**
      * 下载 APK：镜像逐个回退 + 断点续传 + sha256 校验。
      * @param digest GitHub 提供的 "sha256:xxx"（可空；非空时下载后强制校验）
      * @throws java.io.IOException 网络失败/校验失败时抛出，由调用方展示 message
@@ -74,15 +85,19 @@ class UpdateInstaller(private val context: Context) {
         throw lastError ?: java.io.IOException("下载失败")
     }
 
-    /** 单地址下载（含断点续传与校验） */
+    /** 单地址下载（含断点续传与校验）。part 与 URL 绑定，跨镜像互不复用 */
     private suspend fun downloadSingle(
         url: String,
         digest: String,
         onProgress: (DownloadProgress) -> Unit,
     ): File? {
         val targetFile = File(downloadDir, "jingcun_update.apk")
-        val partFile = File(downloadDir, "jingcun_update.apk.part")
+        val partFile = partFileFor(url)
         if (targetFile.exists()) targetFile.delete()
+        // 清理其它地址的残留半截文件，防缓存膨胀
+        runCatching {
+            downloadDir.listFiles()?.filter { it.name.endsWith(".part") && it != partFile }?.forEach { it.delete() }
+        }
 
         var resumeFrom = if (partFile.exists()) partFile.length() else 0L
         var retries = 0
@@ -100,7 +115,17 @@ class UpdateInstaller(private val context: Context) {
                 }
                 conn.connect()
                 when (conn.responseCode) {
-                    206 -> { /* 断点续传命中 */ }
+                    206 -> {
+                        // 校验 Content-Range 起点与本地续传点一致；错位（劣质镜像）则丢弃半截文件按全量重下
+                        val start = conn.getHeaderField("Content-Range")
+                            ?.substringAfter(" ")?.substringBefore("-")?.trim()?.toLongOrNull()
+                        if (start != null && start != resumeFrom) {
+                            partFile.delete()
+                            resumeFrom = 0L
+                            conn.disconnect()
+                            continue
+                        }
+                    }
                     200 -> { if (resumeFrom > 0) { partFile.delete(); resumeFrom = 0L } }
                     416 -> { partFile.delete(); resumeFrom = 0L; conn.disconnect(); continue }
                     else -> return null
@@ -140,6 +165,11 @@ class UpdateInstaller(private val context: Context) {
                 }
 
                 onProgress(DownloadProgress(partFile.length(), total))
+                // 显式完整性检查：服务端给出总长但实际不符（截断/内容注入），直接判失败
+                if (total > 0 && partFile.length() != total) {
+                    partFile.delete()
+                    throw java.io.IOException("下载不完整（${partFile.length()}/${total} 字节），已清理重试")
+                }
                 if (!verifySha256(partFile, digest)) {
                     partFile.delete()
                     throw java.io.IOException("安装包校验失败（sha256 不匹配），已清理重试")
