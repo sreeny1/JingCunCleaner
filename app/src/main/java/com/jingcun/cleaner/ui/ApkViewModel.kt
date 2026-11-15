@@ -3,6 +3,7 @@ package com.jingcun.cleaner.ui
 import android.app.Application
 import android.os.Environment
 import android.os.StatFs
+import androidx.compose.ui.graphics.ImageBitmap
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.jingcun.cleaner.apk.AppExtractor
@@ -13,6 +14,7 @@ import com.jingcun.cleaner.data.ScreenOrientation
 import com.jingcun.cleaner.data.SettingsRepository
 import com.jingcun.cleaner.data.ThemeMode
 import com.jingcun.cleaner.util.PermissionAdapter
+import com.jingcun.cleaner.util.drawableToImageBitmap
 import com.jingcun.cleaner.update.UpdateChecker
 import com.jingcun.cleaner.update.UpdateInstaller
 import kotlinx.coroutines.Job
@@ -24,6 +26,8 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 
 // ==================== APK 归纳状态 ====================
 
@@ -321,6 +325,8 @@ class ApkViewModel(app: Application) : AndroidViewModel(app) {
                     progress = 1f,
                     successCount = ok,
                     message = "成功 $ok / 共 ${results.size}",
+                    // 归纳后源文件已移动/改名，列表数据过期；APK库/归纳页重新扫描后刷新
+                    apks = emptyList(),
                 )
             } catch (e: kotlinx.coroutines.CancellationException) {
                 throw e
@@ -375,6 +381,86 @@ class ApkViewModel(app: Application) : AndroidViewModel(app) {
                 )
             }
         }
+    }
+
+    // ---- APK 库（本地 APK 浏览 / 安装 / 删除，与归纳页共用扫描数据） ----
+
+    /** APK 库页轻量状态：删除进行中与提示消息 */
+    data class LibraryUiState(
+        val deleting: Boolean = false,
+        val installMessage: String = "",
+        val deleteMessage: String = "",
+    )
+
+    private val _libraryState = MutableStateFlow(LibraryUiState())
+    val libraryState: StateFlow<LibraryUiState> = _libraryState.asStateFlow()
+
+    /** APK 图标内存缓存（路径:大小 → 位图；null 表示解析过但无图标，避免重复解析浪费 IO） */
+    private val iconCache = mutableMapOf<String, ImageBitmap?>()
+    private val iconLock = Mutex()
+
+    private fun iconKey(apk: ApkOrganizer.ApkInfo): String =
+        "${apk.sourceFile.absolutePath}:${apk.size}"
+
+    /** 同步取缓存图标（未命中返回 null，列表先显示占位再异步加载） */
+    fun cachedIcon(apk: ApkOrganizer.ApkInfo): ImageBitmap? = iconCache[iconKey(apk)]
+
+    /** 异步解析 APK 图标（IO 线程；结果缓存，同文件不重复解析） */
+    suspend fun loadIcon(apk: ApkOrganizer.ApkInfo): ImageBitmap? =
+        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+            val key = iconKey(apk)
+            iconLock.withLock {
+                if (iconCache.containsKey(key)) return@withLock iconCache[key]
+                val bmp = runCatching {
+                    apkOrganizer.loadApkIcon(apk.sourceFile)?.let { drawableToImageBitmap(it) }
+                }.getOrNull()
+                iconCache[key] = bmp
+                bmp
+            }
+        }
+
+    /** 从 APK 库安装：调起系统安装器（需「安装未知应用」权限，未授权时提示） */
+    fun installApkFromLibrary(apk: ApkOrganizer.ApkInfo) {
+        when (updateInstaller.install(apk.sourceFile)) {
+            UpdateInstaller.InstallResult.Started -> {
+                // 调起成功，系统安装页接管
+                _libraryState.value = LibraryUiState()
+            }
+            UpdateInstaller.InstallResult.NeedInstallPermission -> {
+                _libraryState.value = LibraryUiState(
+                    installMessage = "需授权「安装未知应用」权限，请在系统设置允许后重试",
+                )
+            }
+            UpdateInstaller.InstallResult.NoInstaller -> {
+                _libraryState.value = LibraryUiState(installMessage = "无法调起系统安装器")
+            }
+        }
+    }
+
+    /** 从 APK 库删除单个 APK 文件（确认后调用；成功后列表即时移除并清缓存） */
+    fun deleteApk(apk: ApkOrganizer.ApkInfo) {
+        if (_libraryState.value.deleting) return
+        _libraryState.value = _libraryState.value.copy(deleting = true)
+        viewModelScope.launch {
+            val ok = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                runCatching { apk.sourceFile.delete() && !apk.sourceFile.exists() }.getOrDefault(false)
+            }
+            if (ok) {
+                // 文件已删，扫描缓存失效；归纳页/APK库列表同步移除该条
+                runCatching { apkOrganizer.clearScanCache() }
+                _organizeState.update { s ->
+                    s.copy(apks = s.apks.filter { a -> a.sourceFile.absolutePath != apk.sourceFile.absolutePath })
+                }
+                _libraryState.value = LibraryUiState()
+            } else {
+                _libraryState.value = _libraryState.value.copy(deleting = false, deleteMessage = "删除失败，文件可能被占用")
+            }
+        }
+    }
+
+    /** 清除 APK 库提示消息（Snackbar 展示后调用） */
+    fun clearLibraryMessages() {
+        _libraryState.value = _libraryState.value.copy(installMessage = "", deleteMessage = "")
     }
 
     /** 取消当前归纳任务（回到空闲） */

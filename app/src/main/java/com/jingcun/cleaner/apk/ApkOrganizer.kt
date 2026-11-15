@@ -316,6 +316,18 @@ class ApkOrganizer(private val context: Context) {
 
     // ---------- 重复文件清理（同应用 + 同版本 + 同签名 才允许删除） ----------
 
+    /** 解析未安装 APK 的应用图标（调用方需在 IO 线程；失败或无图标返回 null） */
+    fun loadApkIcon(file: File): android.graphics.drawable.Drawable? = runCatching {
+        val pm = context.packageManager
+        val pi = pm.getPackageArchiveInfo(file.absolutePath, PackageManager.GET_META_DATA)
+            ?: return null
+        val ai = pi.applicationInfo ?: return null
+        // 必须指向 APK 文件本身，否则 loadIcon 会返回系统默认图标而非应用真实图标
+        ai.sourceDir = file.absolutePath
+        ai.publicSourceDir = file.absolutePath
+        pm.getApplicationIcon(ai)
+    }.getOrNull()
+
     /** 读取未安装 APK 的主签名（GET_SIGNATURES 自 API 1 起可用，兼容全部车机），失败返回 null */
     private fun signatureOf(file: File): String? = runCatching {
         context.packageManager

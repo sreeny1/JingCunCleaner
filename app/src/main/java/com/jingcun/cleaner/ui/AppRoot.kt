@@ -16,6 +16,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Apps
 import androidx.compose.material.icons.filled.Inventory2
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Smartphone
@@ -52,10 +53,11 @@ import com.jingcun.cleaner.util.formatBytes
 sealed class TopDest(val route: String, val label: String, val icon: androidx.compose.ui.graphics.vector.ImageVector) {
     data object Organize : TopDest("organize", "归纳", Icons.Filled.Inventory2)
     data object Extract : TopDest("extract", "提取", Icons.Filled.Smartphone)
+    data object Library : TopDest("library", "APK库", Icons.Filled.Apps)
     data object Settings : TopDest("settings", "设置", Icons.Filled.Settings)
 }
 
-private val topDestinations = listOf(TopDest.Organize, TopDest.Extract, TopDest.Settings)
+private val topDestinations = listOf(TopDest.Organize, TopDest.Extract, TopDest.Library, TopDest.Settings)
 
 /** 是否宽屏（平板/车机）→ 侧边 Rail 导航；窄屏用底部 Bar */
 fun WindowSizeClass.isWide(): Boolean = widthSizeClass != WindowWidthSizeClass.Compact
@@ -111,6 +113,7 @@ fun AppRoot(windowSizeClass: WindowSizeClass) {
         ) {
             composable(TopDest.Organize.route) { OrganizeScreen() }
             composable(TopDest.Extract.route) { ExtractScreen() }
+            composable(TopDest.Library.route) { LibraryScreen() }
             composable(TopDest.Settings.route) { SettingsScreen() }
         }
     }
