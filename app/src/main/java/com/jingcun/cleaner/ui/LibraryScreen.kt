@@ -300,10 +300,10 @@ fun LibraryScreen() {
             text = {
                 Text(
                     "将删除「${apk.appName.ifEmpty { apk.sourceFile.name }}」（${formatBytes(apk.size)}）。\n\n" +
-                        if (apk.alreadyOrganized) {
-                            "归纳目录中已有该文件副本，删除后不影响已归纳的文件。"
-                        } else {
-                            "删除后不可恢复。"
+                        when {
+                            apk.inTargetDir -> "此文件位于「${ApkOrganizer.TARGET_DIR_NAME}」目录中，删除后不可恢复。"
+                            apk.alreadyOrganized -> "归纳目录中已有该文件副本，删除后不影响已归纳的文件。"
+                            else -> "删除后不可恢复。"
                         },
                     style = MaterialTheme.typography.bodyMedium,
                 )
@@ -380,7 +380,7 @@ private fun LibraryItemCard(apk: ApkOrganizer.ApkInfo, vm: ApkViewModel, onClick
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
-                if (apk.integrity != ApkOrganizer.ApkIntegrity.OK || apk.alreadyOrganized) {
+                if (apk.integrity != ApkOrganizer.ApkIntegrity.OK || apk.alreadyOrganized || apk.inTargetDir) {
                     Spacer(Modifier.height(5.dp))
                     Row(
                         horizontalArrangement = Arrangement.spacedBy(6.dp),
@@ -400,7 +400,7 @@ private fun LibraryItemCard(apk: ApkOrganizer.ApkInfo, vm: ApkViewModel, onClick
                                 )
                             }
                         }
-                        if (apk.alreadyOrganized) {
+                        if (apk.alreadyOrganized || apk.inTargetDir) {
                             Surface(shape = RoundedCornerShape(6.dp), color = MaterialTheme.colorScheme.secondaryContainer) {
                                 Text(
                                     "已归纳",

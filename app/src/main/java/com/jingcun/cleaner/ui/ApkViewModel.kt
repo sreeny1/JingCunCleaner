@@ -299,6 +299,7 @@ class ApkViewModel(app: Application) : AndroidViewModel(app) {
         if (s.phase != OrganizePhase.READY || s.apks.isEmpty() || s.cleaning) return
         val targets = s.apks.filter {
             it.sourceFile.absolutePath in s.selectedPaths &&
+                !it.inTargetDir &&
                 (s.selectedVolume == null || it.volumeName == s.selectedVolume)
         }
         if (targets.isEmpty()) return
@@ -348,7 +349,8 @@ class ApkViewModel(app: Application) : AndroidViewModel(app) {
         val s = _organizeState.value
         if (s.phase != OrganizePhase.READY || s.cleaning || s.apks.isEmpty()) return
         val targets = s.apks.filter {
-            it.alreadyOrganized && (s.selectedVolume == null || it.volumeName == s.selectedVolume)
+            it.alreadyOrganized && !it.inTargetDir &&
+                (s.selectedVolume == null || it.volumeName == s.selectedVolume)
         }
         if (targets.isEmpty()) return
         _organizeState.value = s.copy(cleaning = true, cleanMessage = "")

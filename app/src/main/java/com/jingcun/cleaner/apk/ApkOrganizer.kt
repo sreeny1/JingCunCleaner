@@ -58,6 +58,8 @@ class ApkOrganizer(private val context: Context) {
         val integrity: ApkIntegrity = ApkIntegrity.OK,
         /** 归纳目录已存在同名同大小文件（COPY 模式归纳后保留的原件等） */
         val alreadyOrganized: Boolean = false,
+        /** 文件位于归纳目标目录内：归纳页不展示/不参与归纳，APK库页正常浏览 */
+        val inTargetDir: Boolean = false,
     )
 
     data class OrganizeResult(
@@ -138,8 +140,9 @@ class ApkOrganizer(private val context: Context) {
                 for (c in children) {
                     if (c.isDirectory) {
                         val path = runCatching { c.canonicalPath }.getOrDefault(c.absolutePath)
-                        // 跳过归纳目标目录与系统/私有目录（防重复整理、防误入深层系统路径）
-                        if (path == targetPath) continue
+                        // 归纳目标目录不再排除（v3.5.1 修复 APK库扫不到归档文件），
+                        // 其内文件带 inTargetDir 标记：归纳页过滤，APK库页正常展示；
+                        // 系统/私有目录仍跳过（防误入深层系统路径）
                         if (c.name in SKIP_DIRS) continue
                         stack.addLast(c)
                     } else if (c.extension.lowercase(Locale.ROOT) in APK_EXTS) {
@@ -147,8 +150,13 @@ class ApkOrganizer(private val context: Context) {
                         onProgress(Progress(scanned, -1, c.name))
                         // 解析失败（XAPK/APKS 容器、损坏包）不再静默丢弃，保留原名进列表
                         val info = parseApk(c, volumeLabel) ?: unrecognizedInfo(c, volumeLabel)
+                        // 归纳目录内的文件直接标记来源；不再做 alreadyOrganized 判定
+                        // （它就在归纳目录里，按文件名匹配自身毫无意义）
+                        val filePath = runCatching { c.canonicalPath }.getOrDefault(c.absolutePath)
                         result.add(
-                            if (info.size > 0 && targetIndex[info.targetName] == info.size) {
+                            if (filePath.startsWith("$targetPath/")) {
+                                info.copy(inTargetDir = true)
+                            } else if (info.size > 0 && targetIndex[info.targetName] == info.size) {
                                 info.copy(alreadyOrganized = true)
                             } else {
                                 info
@@ -410,7 +418,8 @@ class ApkOrganizer(private val context: Context) {
                         .put("r", a.recognized)
                         .put("vol", a.volumeName)
                         .put("ig", a.integrity.name)
-                        .put("ao", a.alreadyOrganized),
+                        .put("ao", a.alreadyOrganized)
+                        .put("itd", a.inTargetDir),
                 )
             }
             cacheFile.writeText(arr.toString())
@@ -421,9 +430,9 @@ class ApkOrganizer(private val context: Context) {
     suspend fun loadScanCache(): List<ApkInfo>? = withContext(Dispatchers.IO) {
         runCatching {
             val arr = org.json.JSONArray(cacheFile.readText())
-            // v3.2 之前缓存的条目没有卷名字段，直接失效重扫
+            // v3.5.1 之前缓存的条目没有卷名/归纳目录标记字段，直接失效重扫
             val first = arr.optJSONObject(0)
-            if (first != null && !first.has("vol")) return@runCatching null
+            if (first != null && (!first.has("vol") || !first.has("itd"))) return@runCatching null
             val out = mutableListOf<ApkInfo>()
             for (i in 0 until arr.length()) {
                 val o = arr.optJSONObject(i) ?: continue
@@ -448,6 +457,7 @@ class ApkOrganizer(private val context: Context) {
                         alreadyOrganized =
                             o.optBoolean("ao", false) &&
                                 findExistingSameSize(o.optString("t"), size) != null,
+                        inTargetDir = o.optBoolean("itd", false),
                     ),
                 )
             }

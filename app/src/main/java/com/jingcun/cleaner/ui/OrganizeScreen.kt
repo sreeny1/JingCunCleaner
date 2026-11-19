@@ -336,10 +336,11 @@ fun OrganizeScreen() {
     }
 }
 
-/** 当前卷筛选下的 APK 列表（selectedVolume=null 返回全部） */
+/** 当前卷筛选下的 APK 列表（selectedVolume=null 返回全部；归纳目录内的文件不参与归纳展示） */
 private fun filteredApks(state: OrganizeUiState): List<ApkOrganizer.ApkInfo> =
-    if (state.selectedVolume == null) state.apks
-    else state.apks.filter { it.volumeName == state.selectedVolume }
+    state.apks
+        .filter { !it.inTargetDir }
+        .filter { state.selectedVolume == null || it.volumeName == state.selectedVolume }
 
 /** 当前卷筛选下已勾选的文件数 */
 private fun selectedCountInFilter(state: OrganizeUiState): Int =
@@ -412,8 +413,10 @@ private fun BigButton(text: String, icon: androidx.compose.ui.graphics.vector.Im
 /** 存储卷筛选行：全部 / 本机存储 / USB 存储设备 / SD 卡（含各自文件数） */
 @Composable
 private fun VolumeFilterRow(state: OrganizeUiState, onSelect: (String?) -> Unit) {
-    // 以原始 volumeName 为键（空串也可能出现），显示名仅在 label 兜底「未知位置」
+    // 以原始 volumeName 为键（空串也可能出现），显示名仅在 label 兜底「未知位置」；
+    // 归纳目录内的文件不参与归纳，计数一并排除
     val volumes = state.apks
+        .filter { !it.inTargetDir }
         .groupingBy { it.volumeName }
         .eachCount()
         .entries
@@ -426,7 +429,7 @@ private fun VolumeFilterRow(state: OrganizeUiState, onSelect: (String?) -> Unit)
             FilterChip(
                 selected = state.selectedVolume == null,
                 onClick = { onSelect(null) },
-                label = { Text("全部 · ${state.apks.size}") },
+                label = { Text("全部 · ${state.apks.count { !it.inTargetDir }}") },
             )
         }
         items(volumes) { entry ->
