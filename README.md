@@ -2,7 +2,7 @@
 
 > 面向 Android 车机、平板、手机的 APK 管理工具。扫描归纳存储中的 APK → 按应用名+版本号统一命名 → 提取已安装应用安装包 → OTA 在线更新，全流程离线可用，无需注册账号。
 
-- 当前版本：**v3.5.2**（versionCode=19，R8 瘦身版 APK 约 20MB）
+- 当前版本：**v3.5.3**（versionCode=20，R8 瘦身版 APK 约 3MB）
 - 最低系统：Android 12（API 31）
 - 目标系统：Android 16（API 36）
 - 界面框架：Jetpack Compose + Material 3（蓝白科技风主题）

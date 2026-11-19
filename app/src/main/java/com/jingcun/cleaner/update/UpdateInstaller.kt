@@ -204,7 +204,13 @@ class UpdateInstaller(private val context: Context) {
 
     /**
      * 触发系统安装器安装 APK（引导式安装）。
-     * 关键修复：检查 canRequestPackageInstalls()，未授权返回 NeedInstallPermission 引导授权。
+     * v3.5.3 修复（卓易通等 ROM 调不起安装器）：
+     * 1. 去掉 resolveActivity 判空——targetSdk 30+ 包可见性限制 + 精简 ROM
+     *    会把安装器组件隐藏，resolveActivity 误报 null；改直接 startActivity，
+     *    捕获 ActivityNotFoundException 才判无安装器（startActivity 不受可见性限制）
+     * 2. FileProvider 路径已补 external-path 与 root-path（file_provider_paths.xml），
+     *    APK库/外部存储/U盘路径的 getUriForFile 不再抛 IllegalArgumentException
+     *    （此前异常被 runCatching 吞掉，同样误报「无安装器」）
      */
     fun install(apkFile: File): InstallResult {
         // Android 8.0+ 需检查"安装未知应用"权限
@@ -213,8 +219,7 @@ class UpdateInstaller(private val context: Context) {
                 return InstallResult.NeedInstallPermission
             }
         }
-        return runCatching {
-            // minSdk=31，直接用 FileProvider，删除 Android 7.0 以下死代码
+        return try {
             val uri = FileProvider.getUriForFile(
                 context,
                 "${context.packageName}.fileprovider",
@@ -225,12 +230,14 @@ class UpdateInstaller(private val context: Context) {
                 addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                 addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
             }
-            if (intent.resolveActivity(context.packageManager) == null) {
-                return InstallResult.NoInstaller
-            }
             context.startActivity(intent)
             InstallResult.Started
-        }.getOrDefault(InstallResult.NoInstaller)
+        } catch (e: android.content.ActivityNotFoundException) {
+            InstallResult.NoInstaller
+        } catch (e: Exception) {
+            // FileProvider 路径异常等兜底，不再静默吞成"无安装器"
+            InstallResult.NoInstaller
+        }
     }
 
     /** 跳转到"安装未知应用"授权页 */

@@ -3,6 +3,21 @@
 本项目版本号遵循 `主版本.次版本`（如 `3.2`），versionCode 单调递增。
 每次发布在 GitHub Releases 创建对应 tag（如 `v3.2`）并上传 APK。
 
+## [v3.5.3] - 2026-11-19
+
+### 修复（卓易通等 ROM 调不起系统安装器）
+- **APK库点击「安装」提示「无法调起系统安装器」**：
+  - 根因：FileProvider 路径配置只覆盖应用缓存目录（OTA 下载路径），APK库
+    扫描到的 APK 位于本机存储（如「APK归纳」目录）/U盘/SD卡，
+    `getUriForFile` 抛出路径异常且被静默吞掉，误报为「无安装器」
+  - 修复：`file_provider_paths.xml` 补充 `external-path`（本机存储全目录）与
+    `root-path`（U盘/SD卡等任意挂载路径兜底）
+  - 加固：去掉受 ROM 实现差异影响的 `resolveActivity` 预判，改为直接调起、
+    捕获 `ActivityNotFoundException` 才判「无安装器」；异常不再静默吞掉
+
+### 其他
+- versionCode=20，versionName=3.5.3
+
 ## [v3.5.2] - 2026-11-19
 
 ### 优化（OTA 下载可靠性 · 针对老版本更新失败）

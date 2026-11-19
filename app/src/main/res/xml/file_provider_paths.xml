@@ -3,4 +3,8 @@
     <!-- OTA 下载的 APK 存放在 externalCacheDir/updates -->
     <external-cache-path name="updates" path="updates/" />
     <cache-path name="cache" path="." />
+    <!-- APK库安装：覆盖本机存储（/storage/emulated/0，含「APK归纳」目录） -->
+    <external-path name="external_storage" path="." />
+    <!-- APK库安装：U盘/SD卡等任意挂载路径（FileProvider 兜底根，须放最后） -->
+    <root-path name="device_root" path="." />
 </paths>
