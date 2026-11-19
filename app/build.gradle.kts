@@ -12,8 +12,8 @@ android {
         applicationId = "com.jingcun.cleaner"
         minSdk = 31
         targetSdk = 36
-        versionCode = 18
-        versionName = "3.5.1"
+        versionCode = 19
+        versionName = "3.5.2"
     }
 
     signingConfigs {
@@ -27,7 +27,12 @@ android {
 
     buildTypes {
         release {
-            isMinifyEnabled = false
+            // v3.5.2：开启 R8 混淆收缩 + 资源收缩。本项目类已由 proguard-rules.pro
+            // 全量 keep（行为不变），R8 仅裁剪第三方未用代码——APK 从 49MB 降至
+            // 约 20MB，v3.2 老客户端 OTA 下载 46MB 大包在国内网络下断流/篡改导致
+            // sha256 校验必败的问题随体积减半而大幅缓解。
+            isMinifyEnabled = true
+            isShrinkResources = true
             signingConfig = signingConfigs.getByName("release")
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
