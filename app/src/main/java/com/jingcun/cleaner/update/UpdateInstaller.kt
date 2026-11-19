@@ -25,6 +25,16 @@ import java.net.URL
  * v3.4.1 修复（车机更新 sha256 校验失败）：.part 与下载 URL 绑定（跨镜像
  *   不再复用半截文件，杜绝不同源内容拼接错位）；206 续传校验 Content-Range
  *   起点；新增下载完整性显式检查
+ * v3.5.4 修复（OTA 下载源返回 HTML 错误页导致 sha256 必败）：
+ * 1. 镜像池更换：ghproxy.link / gh-proxy.net 已静默失效（返回 HTML 错误页，
+ *    自带 Content-Length，长度检查拦不住 → sha256 必败），仅保留实测可用源
+ * 2. ZIP 魔数快检：APK 是 ZIP，下载后先验文件头再验 sha256，HTML 错误页
+ *    在校验前被拦截，报错不再误导排查方向
+ * 3. 直连通道修复：HttpURLConnection 自动重定向只跟随同主机，GitHub release
+ *    下载的跨主机 302（github.com → objects.githubusercontent.com）会被静默
+ *    返回导致直连从未生效——改为手动逐跳跟随
+ * 4. 失败诊断：全部源失败时汇总各源失败原因；sha256 失败携带实际哈希前缀
+ * 详见 docs/OTA_下载可靠性规范.md（强制规范，改动下载器前必读）
  */
 class UpdateInstaller(private val context: Context) {
 
@@ -40,13 +50,21 @@ class UpdateInstaller(private val context: Context) {
     }
 
     companion object {
-        /** 下载镜像前缀：直连失败时按序尝试（镜像站时效性强，仅作回退不作首选） */
+        /**
+         * 下载源列表（直连 + 镜像回退，按序尝试）。
+         * v3.5.4 教训：镜像站会静默失效（ghproxy.link / gh-proxy.net 曾返回
+         * HTML 错误页而非文件内容，长度检查拦不住，sha256 必败）。镜像池只放
+         * 实测可用的源；新增/更换镜像前必须 curl 实测下载并校验 sha256，
+         * 规范见 docs/OTA_下载可靠性规范.md
+         */
         private val MIRROR_PREFIXES = listOf(
             "",
-            "https://ghproxy.link/",
-            "https://gh-proxy.net/",
+            "https://ghfast.top/",
+            "https://gh-proxy.com/",
+            "https://github.moeyy.xyz/",
         )
         private const val MAX_RESUME_RETRIES = 3
+        private const val MAX_REDIRECTS = 5
     }
 
     private val downloadDir: File by lazy {
@@ -62,27 +80,65 @@ class UpdateInstaller(private val context: Context) {
         File(downloadDir, "jingcun_update_${Integer.toHexString(url.hashCode())}.apk.part")
 
     /**
-     * 下载 APK：镜像逐个回退 + 断点续传 + sha256 校验。
+     * 下载 APK：多源逐个回退 + 断点续传 + sha256 校验。
      * @param digest GitHub 提供的 "sha256:xxx"（可空；非空时下载后强制校验）
-     * @throws java.io.IOException 网络失败/校验失败时抛出，由调用方展示 message
+     * @throws java.io.IOException 全部源失败时抛出，message 汇总各源失败原因
      */
     suspend fun download(
         url: String,
         digest: String = "",
         onProgress: (DownloadProgress) -> Unit,
     ): File? = withContext(Dispatchers.IO) {
+        val failures = mutableListOf<String>()
         var lastError: Exception? = null
         for (mirror in MIRROR_PREFIXES) {
+            val label = if (mirror.isEmpty()) "直连" else mirror.removePrefix("https://").removeSuffix("/")
             try {
                 val file = downloadSingle(mirror + url, digest, onProgress)
                 if (file != null) return@withContext file
+                failures.add("$label:服务器无内容")
             } catch (e: kotlinx.coroutines.CancellationException) {
                 throw e
             } catch (e: Exception) {
+                // v3.5.4：记录每个源的失败原因，全部失败后汇总展示，杜绝无证据报错
+                failures.add("$label:${e.message ?: e.javaClass.simpleName}")
                 lastError = e
             }
         }
-        throw lastError ?: java.io.IOException("下载失败")
+        throw java.io.IOException("全部下载源失败（${failures.joinToString("；")}）", lastError)
+    }
+
+    /**
+     * 建立连接并手动跟随跨主机重定向。
+     * HttpURLConnection 的自动重定向只跟随同主机同协议：GitHub release 下载的
+     * 302（github.com → objects.githubusercontent.com）会被静默返回、直连通道
+     * 因此从未真正生效——必须手动逐跳跟随。
+     */
+    private fun openFollowRedirects(url: String, resumeFrom: Long): HttpURLConnection {
+        var current = URL(url)
+        repeat(MAX_REDIRECTS) {
+            val conn = current.openConnection() as HttpURLConnection
+            conn.requestMethod = "GET"
+            conn.connectTimeout = 15000
+            conn.readTimeout = 30000
+            conn.setRequestProperty("User-Agent", "JingCunCleaner-OTA")
+            conn.instanceFollowRedirects = false
+            if (resumeFrom > 0) conn.setRequestProperty("Range", "bytes=$resumeFrom-")
+            conn.connect()
+            when (conn.responseCode) {
+                301, 302, 303, 307, 308 -> {
+                    val host = conn.url.host
+                    val location = conn.getHeaderField("Location")
+                    conn.disconnect()
+                    if (location.isNullOrBlank()) {
+                        throw java.io.IOException("服务器重定向缺少 Location（$host）")
+                    }
+                    current = URL(current, location)
+                }
+                else -> return conn
+            }
+        }
+        throw java.io.IOException("重定向超过 $MAX_REDIRECTS 跳")
     }
 
     /** 单地址下载（含断点续传与校验）。part 与 URL 绑定，跨镜像互不复用 */
@@ -105,15 +161,7 @@ class UpdateInstaller(private val context: Context) {
         try {
             while (true) {
                 conn?.disconnect() // 续传/重试前断开上一连接，防泄漏
-                conn = (URL(url).openConnection() as HttpURLConnection).apply {
-                    requestMethod = "GET"
-                    connectTimeout = 15000
-                    readTimeout = 30000
-                    setRequestProperty("User-Agent", "JingCunCleaner-OTA")
-                    instanceFollowRedirects = true
-                    if (resumeFrom > 0) setRequestProperty("Range", "bytes=$resumeFrom-")
-                }
-                conn.connect()
+                conn = openFollowRedirects(url, resumeFrom)
                 when (conn.responseCode) {
                     206 -> {
                         // 校验 Content-Range 起点与本地续传点一致；错位（劣质镜像）则丢弃半截文件按全量重下
@@ -170,9 +218,22 @@ class UpdateInstaller(private val context: Context) {
                     partFile.delete()
                     throw java.io.IOException("下载不完整（${partFile.length()}/${total} 字节），已清理重试")
                 }
-                if (!verifySha256(partFile, digest)) {
+                // v3.5.4 内容魔数快检：失效镜像会返回「长度正常的 HTML 错误页」，
+                // 长度检查拦不住、sha256 报错误导排查方向——APK 是 ZIP，先验文件头
+                if (!isZipArchive(partFile)) {
+                    val head = headHex(partFile)
+                    val size = partFile.length()
                     partFile.delete()
-                    throw java.io.IOException("安装包校验失败（sha256 不匹配），已清理重试")
+                    throw java.io.IOException("下载源返回非安装包内容（${size}B，头 $head），已换源重试")
+                }
+                // sha256 校验：失败时携带实际哈希前缀（诊断证据），不再无证据报错
+                val actual = sha256Hex(partFile)
+                val expected = digest.substringAfter("sha256:").substringAfter("SHA256:").trim().lowercase()
+                if (digest.isNotBlank() && expected.length == 64 && actual != expected) {
+                    partFile.delete()
+                    throw java.io.IOException(
+                        "安装包校验失败（实际 sha256 ${actual?.take(8) ?: "?"}…，期望 ${expected.take(8)}…），已换源重试"
+                    )
                 }
                 if (!partFile.renameTo(targetFile)) {
                     partFile.copyTo(targetFile, overwrite = true)
@@ -185,22 +246,31 @@ class UpdateInstaller(private val context: Context) {
         }
     }
 
-    /** sha256 校验；digest 为空时跳过（仅存在性与非空校验） */
-    private fun verifySha256(file: File, digest: String): Boolean {
-        if (!file.exists() || file.length() == 0L) return false
-        if (digest.isBlank()) return true
-        return runCatching {
-            val expected = digest.substringAfter("sha256:").substringAfter("SHA256:").trim().lowercase()
-            if (expected.length != 64) return true // digest 格式异常时不拦截更新
-            val md = java.security.MessageDigest.getInstance("SHA-256")
-            file.inputStream().use { input ->
-                val buffer = ByteArray(64 * 1024)
-                var read: Int
-                while (input.read(buffer).also { read = it } != -1) md.update(buffer, 0, read)
-            }
-            md.digest().joinToString("") { "%02x".format(it) } == expected
-        }.getOrDefault(false)
-    }
+    /** 计算 sha256 hex（小写）；读取失败返回 null */
+    private fun sha256Hex(file: File): String? = runCatching {
+        val md = java.security.MessageDigest.getInstance("SHA-256")
+        file.inputStream().use { input ->
+            val buffer = ByteArray(64 * 1024)
+            var read: Int
+            while (input.read(buffer).also { read = it } != -1) md.update(buffer, 0, read)
+        }
+        md.digest().joinToString("") { "%02x".format(it) }
+    }.getOrNull()
+
+    /** ZIP/APK 文件头校验（PK\x03\x04）：拦下失效镜像返回的 HTML 错误页等异常内容 */
+    private fun isZipArchive(file: File): Boolean = runCatching {
+        val head = ByteArray(4)
+        file.inputStream().use { it.read(head) } == 4 &&
+            head[0] == 0x50.toByte() && head[1] == 0x4B.toByte() &&
+            head[2] == 0x03.toByte() && head[3] == 0x04.toByte()
+    }.getOrDefault(false)
+
+    /** 文件头 hex（诊断用），读取失败返回 "?" */
+    private fun headHex(file: File): String = runCatching {
+        val head = ByteArray(4)
+        val n = file.inputStream().use { it.read(head) }
+        if (n <= 0) "?" else head.take(n).joinToString("") { "%02X".format(it) }
+    }.getOrDefault("?")
 
     /**
      * 触发系统安装器安装 APK（引导式安装）。

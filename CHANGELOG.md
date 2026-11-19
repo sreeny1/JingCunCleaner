@@ -3,6 +3,29 @@
 本项目版本号遵循 `主版本.次版本`（如 `3.2`），versionCode 单调递增。
 每次发布在 GitHub Releases 创建对应 tag（如 `v3.2`）并上传 APK。
 
+## [v3.5.4] - 2026-11-19
+
+### 修复（OTA 更新反复「sha256 不匹配」的真正根因）
+- **实测确诊**：镜像池里的 ghproxy.link / gh-proxy.net 已静默失效——返回的是
+  **自带 Content-Length 的 HTML 错误页**（1739B / 195B），长度完整性检查拦不住，
+  sha256 校验必败；且 HttpURLConnection 不跟随跨主机 302，直连 GitHub 通道
+  自 v3.1 起从未真正生效——四条下载路全堵死
+- 修复：
+  1. **镜像池更换为实测可用源**（ghfast.top、gh-proxy.com 等，均经 curl 实测
+     sha256 与官方资产一致）；坏镜像移出
+  2. **ZIP 魔数快检**：APK 是 ZIP，下载后先验文件头（PK\x03\x04）再验 sha256，
+     HTML 错误页在校验前被拦截并自动换源，报错不再误导排查方向
+  3. **直连通道修复**：手动逐跳跟随跨主机重定向（最多 5 跳），直连 GitHub
+     首次真正可用
+  4. **失败诊断**：全部源失败时汇总各源失败原因展示；sha256 失败携带实际
+     哈希前缀；非安装包内容报错携带字节数与文件头 hex
+- 新增 [docs/OTA_DOWNLOAD_RELIABILITY.md](docs/OTA_DOWNLOAD_RELIABILITY.md)
+  **永久强制规范**：镜像必须实测入库、下载必须魔数校验、失败必须带诊断证据，
+  杜绝同类事故再次发生
+
+### 其他
+- versionCode=21，versionName=3.5.4
+
 ## [v3.5.3] - 2026-11-19
 
 ### 修复（卓易通等 ROM 调不起系统安装器）
