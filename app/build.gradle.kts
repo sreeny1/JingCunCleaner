@@ -12,8 +12,8 @@ android {
         applicationId = "com.jingcun.cleaner"
         minSdk = 31
         targetSdk = 36
-        versionCode = 21
-        versionName = "3.5.4"
+        versionCode = 22
+        versionName = "3.5.5"
     }
 
     signingConfigs {

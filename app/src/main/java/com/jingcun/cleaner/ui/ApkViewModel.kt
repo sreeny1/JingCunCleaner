@@ -8,6 +8,7 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.jingcun.cleaner.apk.AppExtractor
 import com.jingcun.cleaner.apk.ApkOrganizer
+import com.jingcun.cleaner.apk.FileOps
 import com.jingcun.cleaner.data.AppSettings
 import com.jingcun.cleaner.data.ApkOrganizeMode
 import com.jingcun.cleaner.data.ScreenOrientation
@@ -126,6 +127,9 @@ class ApkViewModel(app: Application) : AndroidViewModel(app) {
         runCatching { refreshStorage() }
         runCatching { updateStoragePermission() }
         runCatching { refreshShizukuStatus() }
+        // Shizuku 删除兜底：卓易通等兼容环境的代理 FS 静默拒绝应用进程删除时，
+        // 以 shell 身份删除（未激活 Shizuku 时该钩子内部直接返回 false）
+        runCatching { apkOrganizer.shizukuDeleter = { path -> appExtractor.deleteViaShizuku(path) } }
         // Shizuku 服务监听：服务启动/断开/授权结果变化时刷新状态
         runCatching {
             rikka.shizuku.Shizuku.addBinderReceivedListenerSticky(binderReceivedListener)
@@ -444,10 +448,11 @@ class ApkViewModel(app: Application) : AndroidViewModel(app) {
         if (_libraryState.value.deleting) return
         _libraryState.value = _libraryState.value.copy(deleting = true)
         viewModelScope.launch {
-            val ok = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
-                runCatching { apk.sourceFile.delete() && !apk.sourceFile.exists() }.getOrDefault(false)
+            // FileOps 回退链：File.delete → Files.delete → Shizuku（shell 身份）删除
+            val result = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                FileOps.deleteFile(apk.sourceFile) { path -> appExtractor.deleteViaShizuku(path) }
             }
-            if (ok) {
+            if (result.ok) {
                 // 文件已删，扫描缓存失效；归纳页/APK库列表同步移除该条
                 runCatching { apkOrganizer.clearScanCache() }
                 _organizeState.update { s ->
@@ -455,7 +460,11 @@ class ApkViewModel(app: Application) : AndroidViewModel(app) {
                 }
                 _libraryState.value = LibraryUiState()
             } else {
-                _libraryState.value = _libraryState.value.copy(deleting = false, deleteMessage = "删除失败，文件可能被占用")
+                _libraryState.value = _libraryState.value.copy(
+                    deleting = false,
+                    deleteMessage = "删除失败（${result.reason}）。卓易通/鸿蒙兼容环境可能限制删除，" +
+                        "可在文件管理器「我的手机 → 兼容应用数据」内手动删除",
+                )
             }
         }
     }

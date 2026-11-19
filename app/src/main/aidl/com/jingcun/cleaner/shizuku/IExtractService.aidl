@@ -19,4 +19,12 @@ interface IExtractService {
      * @return 复制是否成功
      */
     boolean copyFile(String src, String dst) = 2;
+
+    /**
+     * 以 shell/root 身份删除文件（卓易通等兼容环境的代理 FS 拒绝应用进程
+     * 删除时的兜底；shell uid 对 sdcard 的删除权限更高）。
+     * @param path 待删除文件绝对路径
+     * @return 删除是否成功
+     */
+    boolean deleteFile(String path) = 3;
 }

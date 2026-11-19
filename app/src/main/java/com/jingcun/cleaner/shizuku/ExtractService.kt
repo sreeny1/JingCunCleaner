@@ -37,4 +37,14 @@ class ExtractService : IExtractService.Stub() {
             false
         }
     }
+
+    override fun deleteFile(path: String?): Boolean {
+        if (path.isNullOrEmpty()) return false
+        return try {
+            val f = File(path)
+            f.delete() && !f.exists()
+        } catch (e: Exception) {
+            false
+        }
+    }
 }

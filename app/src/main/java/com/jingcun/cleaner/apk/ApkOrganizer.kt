@@ -85,6 +85,9 @@ class ApkOrganizer(private val context: Context) {
         File(Environment.getExternalStorageDirectory(), TARGET_DIR_NAME)
     }
 
+    /** Shizuku 删除兜底钩子（ViewModel 注入；卓易通等代理 FS 拒绝应用进程删除时启用，未激活为 null） */
+    var shizukuDeleter: ShizukuDelete? = null
+
     /**
      * 收集所有可扫描的存储卷根目录：内置存储 + U 盘/SD 卡。
      * 通过 getExternalFilesDirs 反推卷根（/storage/XXXX-XXXX 形式），兼容车机 U 盘。
@@ -249,10 +252,11 @@ class ApkOrganizer(private val context: Context) {
      * 归纳一个 APK 到目标目录，命名为「应用名+版本号.apk」。
      *
      * 策略：
-     * - 目标目录已有同名同大小文件 → 判定为重复归纳，跳过（防 COPY 模式反复整理堆积 (1)(2) 副本）
-     * - 同卷直接 renameTo（秒完成，零拷贝）；跨卷复制后删除
-     * - MOVE 删除原文件失败视为整体失败并清理 target，防重复归纳产生副本
-     * - 复制失败清理半成品 target，防磁盘泄漏
+     * - 目标目录已有同名同大小文件 → 判定为重复归纳，跳过（防反复整理堆积 (1)(2) 副本）
+     * - COPY：复制成功即成功
+     * - MOVE：走 [FileOps.moveFile] 多策略回退链（renameTo → Files.move →
+     *   复制+删除源），卓易通等兼容环境代理 FS 会静默拒绝 renameTo/delete，
+     *   复制成功但删除源失败时不回滚、如实提示（副本真实有效，判重防堆积）
      */
     suspend fun organize(apk: ApkInfo, mode: ApkOrganizeMode): OrganizeResult = withContext(Dispatchers.IO) {
         // 扫描与归纳之间存在时间差，源文件可能已被移动/删除
@@ -266,17 +270,9 @@ class ApkOrganizer(private val context: Context) {
         findExistingSameSize(apk.targetName, apk.size)?.let {
             return@withContext OrganizeResult(apk, it.absolutePath, true, "已归纳过（跳过重复）")
         }
-        var target = uniqueTarget(apk.targetName)
-        // 先尝试同卷 rename（仅 MOVE 模式且源同卷时）
-        var movedFast = false
-        if (mode == ApkOrganizeMode.MOVE && isSameVolume(apk.sourceFile, target)) {
-            movedFast = runCatching {
-                apk.sourceFile.renameTo(target) && target.exists() && target.length() == apk.size
-            }.getOrDefault(false)
-        }
-        var ok = movedFast
-        if (!ok) {
-            ok = runCatching {
+        val target = uniqueTarget(apk.targetName)
+        if (mode == ApkOrganizeMode.COPY) {
+            val copied = runCatching {
                 apk.sourceFile.inputStream().use { input ->
                     target.outputStream().use { output -> input.copyTo(output, bufferSize = 128 * 1024) }
                 }
@@ -286,24 +282,24 @@ class ApkOrganizer(private val context: Context) {
                 runCatching { target.delete() }
                 false
             }
-            if (ok && mode == ApkOrganizeMode.MOVE) {
-                val deleted = runCatching { apk.sourceFile.delete() }.getOrDefault(false)
-                if (!deleted) {
-                    // 删除原文件失败：回滚 target，避免重复归纳产生副本
-                    runCatching { target.delete() }
-                    ok = false
-                }
-            }
+            return@withContext OrganizeResult(
+                apkInfo = apk,
+                targetPath = target.absolutePath,
+                success = copied,
+                reason = if (copied) "已复制" else "归纳失败：目标目录不可写或源文件读取失败",
+            )
         }
+        // MOVE：多策略回退链（shizukuDeleter 由 ViewModel 注入，未激活为 null）
+        val mv = FileOps.moveFile(apk.sourceFile, target, shizukuDeleter)
         OrganizeResult(
             apkInfo = apk,
             targetPath = target.absolutePath,
-            success = ok,
-            reason = when {
-                ok && mode == ApkOrganizeMode.MOVE -> "已移动"
-                ok -> "已复制"
-                !apk.sourceFile.exists() -> "源文件已不存在"
-                else -> "归纳失败（权限不足或目标目录不可写）"
+            success = mv.outcome != FileOps.MoveOutcome.FAILED,
+            reason = when (mv.outcome) {
+                FileOps.MoveOutcome.MOVED -> "已移动"
+                FileOps.MoveOutcome.COPIED_SOURCE_LOCKED ->
+                    "已复制到归纳目录，但原文件删除被系统限制（卓易通等兼容环境常见），可在文件管理器中手动删除原文件"
+                FileOps.MoveOutcome.FAILED -> "归纳失败：${mv.reason}"
             },
         )
     }
@@ -366,12 +362,13 @@ class ApkOrganizer(private val context: Context) {
 
     /**
      * 删除一个重复源文件：仅当归纳目录存在同应用/同版本/同签名的副本时执行。
+     * 走 [FileOps.deleteFile] 回退链（卓易通等兼容环境的裸删除会被静默拒绝）。
      * @return true = 已删除
      */
     suspend fun deleteDuplicate(apk: ApkInfo): Boolean = withContext(Dispatchers.IO) {
         val target = File(targetDir, apk.targetName)
         if (!isSameAppVersion(apk, target)) return@withContext false
-        runCatching { apk.sourceFile.delete() }.getOrDefault(false) && !apk.sourceFile.exists()
+        FileOps.deleteFile(apk.sourceFile, shizukuDeleter).ok
     }
 
     /** 归纳目标目录路径 */
@@ -468,16 +465,6 @@ class ApkOrganizer(private val context: Context) {
     /** 清除扫描缓存（归纳完成后源文件已变更，缓存失效） */
     fun clearScanCache() {
         runCatching { cacheFile.delete() }
-    }
-
-    /** 判断两个文件是否位于同一存储卷（同卷可 rename 快速移动） */
-    private fun isSameVolume(a: File, b: File): Boolean {
-        val volRoots = storageVolumes()
-        if (volRoots.isEmpty()) return false
-        fun volumeOf(f: File): String? = volRoots.firstOrNull { root ->
-            runCatching { f.canonicalPath.startsWith(root.canonicalPath) }.getOrDefault(false)
-        }?.canonicalPath
-        return volumeOf(a) != null && volumeOf(a) == volumeOf(b)
     }
 
     /** 文件名非法字符清理 */

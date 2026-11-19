@@ -206,7 +206,11 @@ class AppExtractor(private val context: Context) {
 
     private fun userServiceArgs() = rikka.shizuku.Shizuku.UserServiceArgs(
         ComponentName(context, ExtractService::class.java)
-    ).processNameSuffix("extract").version(1)
+    )
+        .processNameSuffix("extract")
+        // AIDL 新增 deleteFile 后必须升版本号：Shizuku 据此重启旧版本服务进程，
+        // 否则仍在运行的旧服务缺少新方法，事务码 3 调用直接失败
+        .version(2)
 
     /** 确保 Shizuku 用户服务已绑定（异步绑定，最多等待 8 秒） */
     @Synchronized
@@ -227,6 +231,17 @@ class AppExtractor(private val context: Context) {
         return runCatching {
             service.copyFile(src, dst) && validateTarget(File(dst))
         }.getOrDefault(false)
+    }
+
+    /**
+     * 通过 Shizuku 用户服务以 shell 身份删除文件。
+     * 卓易通等兼容环境的代理 FS 会静默拒绝应用进程的 File.delete()，
+     * shell(uid 2000) 身份删除权限更高，可能绕过该限制。
+     */
+    suspend fun deleteViaShizuku(path: String): Boolean = withContext(Dispatchers.IO) {
+        if (!isShizukuGranted()) return@withContext false
+        val service = ensureShizukuService() ?: return@withContext false
+        runCatching { service.deleteFile(path) && !File(path).exists() }.getOrDefault(false)
     }
 
     /** Shizuku 服务是否在运行（用户已激活或启动了 Shizuku 应用） */
